@@ -1307,7 +1307,8 @@ export default function MarketMonitor() {
   const { refresh: refreshFearGreed, refreshing: fgRefreshing } = fearGreed;
   const [activeTab, setActiveTab] = useState("news");
   const [centerTab, setCenterTab] = useState("market");
-  const [riskMode, setRiskMode] = useState("on"); // "on" | "off"
+  const [riskMode, setRiskMode] = useState("on");
+  const [showSidebar, setShowSidebar] = useState(true);
   const alertsFeedRef = useRef(null);
   const [marketStatus, setMarketStatus] = useState("LIVE");
 
@@ -1404,6 +1405,18 @@ export default function MarketMonitor() {
             }}>
             RISK {riskMode.toUpperCase()}
           </button>
+          <button
+            onClick={() => setShowSidebar(s => !s)}
+            title="Toggle news/social panel"
+            style={{
+              background: showSidebar ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.12)",
+              color: showSidebar ? "#e8e8e8" : "#555",
+              padding: "4px 10px", borderRadius: 4, cursor: "pointer",
+              fontSize: 13, lineHeight: 1, letterSpacing: 0,
+            }}>
+            {showSidebar ? "▶" : "◀"}
+          </button>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>
               {time.toLocaleTimeString("en-US", { hour12: false })}
@@ -1439,7 +1452,7 @@ export default function MarketMonitor() {
       </header>
 
       {/* MAIN LAYOUT */}
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "240px 1fr 320px", gridTemplateRows: "1fr auto", gap: 1, background: "rgba(255,255,255,0.04)", minHeight: 0 }}>
+      <div style={{ flex: 1, display: "grid", gridTemplateColumns: showSidebar ? "240px 1fr 320px" : "240px 1fr", gridTemplateRows: "1fr auto", gap: 1, background: "rgba(255,255,255,0.04)", minHeight: 0, transition: "grid-template-columns 0.3s ease" }}>
 
         {/* LEFT — Asset Panel */}
         <div style={{ background: "#0a0a0f", padding: 12, overflowY: "auto", display: "flex", flexDirection: "column", gap: 0 }}>
@@ -1674,6 +1687,7 @@ export default function MarketMonitor() {
           })()}
           </>)}
         </div>
+        {showSidebar && (
         <div style={{ background: "#0a0a0f", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {/* Tabs */}
           <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.07)", padding: "6px 12px 0", flexShrink: 0 }}>
@@ -1701,6 +1715,7 @@ export default function MarketMonitor() {
             {activeTab === "youtube" && <LiveStreamPanel />}
           </div>
         </div>
+        )}
 
         {/* BOTTOM — Alerts Log */}
         <div style={{

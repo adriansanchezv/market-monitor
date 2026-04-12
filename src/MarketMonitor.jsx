@@ -161,21 +161,70 @@ const fetchFearGreed = async () => {
   return { value: val, label };
 };
 
-// FMP — stocks, ETFs, VIX, oil (needs free key from financialmodelingprep.com)
+// FMP — uses separate endpoints for stocks, indexes, commodities, and treasury
 const fetchStocks = async () => {
   if (!API_KEYS.FMP) throw new Error("No FMP key");
-  // SPY, QQQ = ETFs | ^VIX = volatility index | OUSX = WTI crude | ^TNX = 10Y yield
-  const syms = "SPY,QQQ,%5EVIX,OUSX,%5ETNX";
-  const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/${syms}?apikey=${API_KEYS.FMP}`);
-  if (!res.ok) throw new Error(`FMP ${res.status}`);
-  const data = await res.json();
-  const MAP = { "%5EVIX": "VIX", "^VIX": "VIX", "OUSX": "WTI", "%5ETNX": "TNX", "^TNX": "TNX" };
+  const key = API_KEYS.FMP;
   const out = {};
-  data.forEach(q => {
-    const id = MAP[q.symbol] ?? q.symbol;
-    out[id] = { price: parseFloat((q.price ?? 0).toFixed(2)), change: parseFloat((q.changesPercentage ?? 0).toFixed(2)) };
-  });
+
+  // SPY + QQQ — standard equity quote
+  try {
+    const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/SPY,QQQ?apikey=${key}`);
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      data.forEach(q => {
+        out[q.symbol] = { price: parseFloat((q.price ?? 0).toFixed(2)), change: parseFloat((q.changesPercentage ?? 0).toFixed(2)) };
+      });
+    }
+  } catch (e) { console.warn("[FMP SPY/QQQ]", e.message); }
+
+  // VIX — index quote endpoint
+  try {
+    const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/%5EVIX?apikey=${key}`);
+    const data = await res.json();
+    if (Array.isArray(data) && data[0]) {
+      out["VIX"] = { price: parseFloat((data[0].price ?? 0).toFixed(2)), change: parseFloat((data[0].changesPercentage ?? 0).toFixed(2)) };
+    }
+  } catch (e) { console.warn("[FMP VIX]", e.message); }
+
+  // WTI Crude Oil — commodity quote
+  try {
+    const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/USOIL?apikey=${key}`);
+    const data = await res.json();
+    if (Array.isArray(data) && data[0]) {
+      out["WTI"] = { price: parseFloat((data[0].price ?? 0).toFixed(2)), change: parseFloat((data[0].changesPercentage ?? 0).toFixed(2)) };
+    }
+  } catch (e) {
+    // fallback: try CL=F (WTI futures)
+    try {
+      const res2 = await fetch(`https://financialmodelingprep.com/api/v3/quote/CLUSD?apikey=${key}`);
+      const data2 = await res2.json();
+      if (Array.isArray(data2) && data2[0]) {
+        out["WTI"] = { price: parseFloat((data2[0].price ?? 0).toFixed(2)), change: parseFloat((data2[0].changesPercentage ?? 0).toFixed(2)) };
+      }
+    } catch (e2) { console.warn("[FMP WTI]", e2.message); }
+  }
+
+  // TNX — Treasury rates API (returns rate directly, not as a quote)
+  try {
+    const res = await fetch(`https://financialmodelingprep.com/api/v4/treasury?from=${_todayStr()}&to=${_todayStr()}&apikey=${key}`);
+    const data = await res.json();
+    if (Array.isArray(data) && data[0]) {
+      const rate = data[0].year10; // 10-year yield as decimal e.g. 0.0438
+      if (rate) {
+        const prev = _priceCache["TNX"]?.price ?? 4.38;
+        const price = parseFloat((rate * 100).toFixed(2)); // convert to percentage display
+        out["TNX"] = { price, change: parseFloat(((price - prev) / prev * 100).toFixed(2)) };
+      }
+    }
+  } catch (e) { console.warn("[FMP TNX]", e.message); }
+
   return out;
+};
+
+const _todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 };
 
 // Persistent price cache — once we get a real price, we never show mock again

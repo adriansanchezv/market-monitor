@@ -135,15 +135,15 @@ const fetchCrypto = async () => {
 
 // Stocks/ETFs/Futures: Yahoo Finance via allorigins CORS proxy
 const fetchYahoo = async (symbol) => {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d`;
+  // Add timestamp to bust allorigins cache — without this it serves data from months ago
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d&_cb=${Date.now()}`;
   const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-  const res = await fetch(proxy);
+  const res = await fetch(proxy, { cache: "no-store" });
   const wrapper = await res.json();
   const data = JSON.parse(wrapper.contents);
   const meta = data?.chart?.result?.[0]?.meta;
   if (!meta) throw new Error(`Yahoo no data for ${symbol}`);
   const price  = parseFloat((meta.regularMarketPrice ?? 0).toFixed(2));
-  // Use regularMarketChangePercent directly — avoids wrong previousClose fields
   const change = parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2));
   return { price, change };
 };

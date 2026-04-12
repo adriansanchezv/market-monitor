@@ -121,15 +121,14 @@ const fetchCrypto = async () => {
   };
 };
 
-// Always-on: Frankfurter (no key needed) — EUR/USD inverse approximates DXY movement
+// Always-on: open.er-api.com — free, no key, proper CORS headers
 const fetchDXY = async () => {
-  const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=EUR");
-  if (!res.ok) throw new Error(`Frankfurter ${res.status}`);
+  const res = await fetch("https://open.er-api.com/v6/latest/USD");
+  if (!res.ok) throw new Error(`ER-API ${res.status}`);
   const data = await res.json();
-  // EUR/USD rate inverted and scaled to approximate DXY (base ~100)
   const eurusd = data.rates.EUR;
   const dxy = parseFloat((1 / eurusd * 104.0).toFixed(2));
-  return { DXY: { price: dxy, change: 0 } }; // change needs prev day — shows live price
+  return { DXY: { price: dxy, change: 0 } };
 };
 
 // Always-on: Alternative.me Fear & Greed (no key needed)
@@ -167,13 +166,11 @@ const fetchAllPrices = async () => {
     Object.assign(_priceCache, crypto);
   } catch (e) { console.warn("[CoinGecko]", e.message); }
 
-  // DXY — blocked on localhost due to CORS, works on deployed site
-  if (!IS_LOCALHOST) {
-    try {
-      const dxy = await fetchDXY();
-      Object.assign(_priceCache, dxy);
-    } catch (e) { console.warn("[Frankfurter]", e.message); }
-  }
+  // DXY — open.er-api.com supports CORS everywhere
+  try {
+    const dxy = await fetchDXY();
+    Object.assign(_priceCache, dxy);
+  } catch (e) { console.warn("[DXY]", e.message); }
 
   // Optional stocks via FMP
   if (USE_REAL_API.STOCKS && API_KEYS.FMP) {
@@ -220,7 +217,7 @@ const fetchSocialFeed = async () => {
 
 // Binance WebSocket — works on deployed sites, blocked on localhost
 const BINANCE_STREAMS  = "btcusdt@ticker/ethusdt@ticker";
-const BINANCE_WS_URL   = `wss://stream.binance.com:9443/stream?streams=${BINANCE_STREAMS}`;
+const BINANCE_WS_URL = `wss://data-stream.binance.vision/stream?streams=${BINANCE_STREAMS}`;
 const BINANCE_ID_MAP   = { BTCUSDT: "BTC", ETHUSDT: "ETH" };
 const IS_LOCALHOST     = typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");

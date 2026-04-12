@@ -6,9 +6,21 @@ import { LineChart, Line, ResponsiveContainer, Tooltip, AreaChart, Area } from "
 // ─────────────────────────────────────────────
 const INTERVALS = { PRICES: 35000, NEWS: 60000, SOCIAL: 120000 };
 
-const USE_REAL_API = { STOCKS: false, CRYPTO: false, OIL: false, NEWS: false, SOCIAL: false };
+const USE_REAL_API = {
+  get STOCKS() { return !!API_KEYS.FMP; }, // auto-enables when key is pasted
+  CRYPTO: true,
+  OIL: false,
+  NEWS: false,
+  SOCIAL: false,
+};
 
-const API_KEYS = { FMP: "", ALPHA_VANTAGE: "", TWELVE_DATA: "", NEWS_API: "", EIA: "" };
+const API_KEYS = {
+  FMP: "v5QBoYp6yjMmlhTQp4iwQuPAbWDurT1D",           // ← paste your key here: financialmodelingprep.com (free, 250 req/day)
+  ALPHA_VANTAGE: "", // ← alphavantage.co (free, 25 req/day) — fallback
+  TWELVE_DATA: "",   // ← twelvedata.com (free, 800 req/day) — fallback
+  NEWS_API: "",      // ← newsapi.org (free, 100 req/day)
+  EIA: "",           // ← eia.gov/opendata (free)
+};
 
 // ─────────────────────────────────────────────
 // ALERT THRESHOLDS
@@ -121,14 +133,22 @@ const fetchCrypto = async () => {
   };
 };
 
-// Always-on: open.er-api.com — free, no key, proper CORS headers
+// Always-on: open.er-api.com — computes real DXY formula
+// DXY = 50.14348112 × EURUSD^-0.576 × USDJPY^0.136 × GBPUSD^-0.119 × USDCAD^0.091 × USDSEK^0.042 × USDCHF^0.036
 const fetchDXY = async () => {
   const res = await fetch("https://open.er-api.com/v6/latest/USD");
   if (!res.ok) throw new Error(`ER-API ${res.status}`);
   const data = await res.json();
-  const eurusd = data.rates.EUR;
-  const dxy = parseFloat((1 / eurusd * 104.0).toFixed(2));
-  return { DXY: { price: dxy, change: 0 } };
+  const r = data.rates;
+  // Real DXY formula using geometric weighted average
+  const dxy = 50.14348112
+    * Math.pow(1 / r.EUR, 0.576)   // EUR is inverse (EUR/USD)
+    * Math.pow(r.JPY,     0.136)   // USD/JPY
+    * Math.pow(1 / r.GBP, 0.119)   // GBP is inverse
+    * Math.pow(r.CAD,     0.091)   // USD/CAD
+    * Math.pow(r.SEK,     0.042)   // USD/SEK
+    * Math.pow(r.CHF,     0.036);  // USD/CHF
+  return { DXY: { price: parseFloat(dxy.toFixed(2)), change: 0 } };
 };
 
 // Always-on: Alternative.me Fear & Greed (no key needed)
@@ -141,17 +161,19 @@ const fetchFearGreed = async () => {
   return { value: val, label };
 };
 
-// Optional: FMP for stocks (needs key)
+// FMP — stocks, ETFs, VIX, oil (needs free key from financialmodelingprep.com)
 const fetchStocks = async () => {
   if (!API_KEYS.FMP) throw new Error("No FMP key");
-  const syms = "SPY,QQQ,VIX,%5EVIX,TNX";
+  // SPY, QQQ = ETFs | ^VIX = volatility index | OUSX = WTI crude | ^TNX = 10Y yield
+  const syms = "SPY,QQQ,%5EVIX,OUSX,%5ETNX";
   const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/${syms}?apikey=${API_KEYS.FMP}`);
   if (!res.ok) throw new Error(`FMP ${res.status}`);
   const data = await res.json();
+  const MAP = { "%5EVIX": "VIX", "^VIX": "VIX", "OUSX": "WTI", "%5ETNX": "TNX", "^TNX": "TNX" };
   const out = {};
   data.forEach(q => {
-    const id = q.symbol === "%5EVIX" ? "VIX" : q.symbol;
-    out[id] = { price: q.price, change: parseFloat((q.changesPercentage ?? 0).toFixed(2)) };
+    const id = MAP[q.symbol] ?? q.symbol;
+    out[id] = { price: parseFloat((q.price ?? 0).toFixed(2)), change: parseFloat((q.changesPercentage ?? 0).toFixed(2)) };
   });
   return out;
 };

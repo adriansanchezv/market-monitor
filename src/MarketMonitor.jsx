@@ -143,25 +143,15 @@ const fetchYahoo = async (symbol) => {
   const meta = data?.chart?.result?.[0]?.meta;
   if (!meta) throw new Error(`Yahoo no data for ${symbol}`);
   const price  = parseFloat((meta.regularMarketPrice ?? 0).toFixed(2));
-  const prev   = parseFloat((meta.previousClose ?? meta.chartPreviousClose ?? price).toFixed(2));
-  const change = prev ? parseFloat(((price - prev) / prev * 100).toFixed(2)) : 0;
+  // Use regularMarketChangePercent directly — avoids wrong previousClose fields
+  const change = parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2));
   return { price, change };
 };
 
-// DXY: real geometric formula using open.er-api.com
+// DXY: fetch directly from Yahoo Finance via proxy — most accurate
 const fetchDXY = async () => {
-  const res = await fetch("https://open.er-api.com/v6/latest/USD");
-  if (!res.ok) throw new Error(`ER-API ${res.status}`);
-  const data = await res.json();
-  const r = data.rates;
-  const dxy = 50.14348112
-    * Math.pow(1 / r.EUR, 0.576)
-    * Math.pow(r.JPY,     0.136)
-    * Math.pow(1 / r.GBP, 0.119)
-    * Math.pow(r.CAD,     0.091)
-    * Math.pow(r.SEK,     0.042)
-    * Math.pow(r.CHF,     0.036);
-  return { DXY: { price: parseFloat(dxy.toFixed(2)), change: 0 } };
+  const result = await fetchYahoo("DX-Y.NYB");
+  return { DXY: result };
 };
 
 // Fear & Greed: Alternative.me

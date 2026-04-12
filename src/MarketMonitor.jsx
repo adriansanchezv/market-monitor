@@ -6,21 +6,8 @@ import { LineChart, Line, ResponsiveContainer, Tooltip, AreaChart, Area } from "
 // ─────────────────────────────────────────────
 const INTERVALS = { PRICES: 35000, NEWS: 60000, SOCIAL: 120000 };
 
-const USE_REAL_API = {
-  get STOCKS() { return !!API_KEYS.FMP; }, // auto-enables when key is pasted
-  CRYPTO: true,
-  OIL: false,
-  NEWS: false,
-  SOCIAL: false,
-};
-
-const API_KEYS = {
-  FMP: "v5QBoYp6yjMmlhTQp4iwQuPAbWDurT1D",           // ← paste your key here: financialmodelingprep.com (free, 250 req/day)
-  ALPHA_VANTAGE: "", // ← alphavantage.co (free, 25 req/day) — fallback
-  TWELVE_DATA: "",   // ← twelvedata.com (free, 800 req/day) — fallback
-  NEWS_API: "",      // ← newsapi.org (free, 100 req/day)
-  EIA: "",           // ← eia.gov/opendata (free)
-};
+// Persistent price cache — never falls back to mock after first real fetch
+const _priceCache = {};
 
 // ─────────────────────────────────────────────
 // ALERT THRESHOLDS
@@ -77,10 +64,14 @@ const ASSET_META = [
 ];
 
 const MOCK_PRICES = {
-  VIX: { price: 18.43, change: 4.21  }, SPY: { price: 5234.18, change: -0.83 },
-  QQQ: { price: 449.22, change: -1.12 }, BTC: { price: 84320.00, change: 2.44 },
-  ETH: { price: 3210.55, change: 1.87  }, WTI: { price: 78.42, change: -2.11 },
-  DXY: { price: 104.23, change: 0.34  }, TNX: { price: 4.38, change: -0.06 },
+  VIX: { price: 17.04, change: 0.00  },
+  SPY: { price: 679.46, change: -0.07 },
+  QQQ: { price: 578.32, change: -0.12 },
+  BTC: { price: 84320.00, change: 0.00 },
+  ETH: { price: 1580.00, change: 0.00 },
+  WTI: { price: 96.57, change: -1.33  },
+  DXY: { price: 98.87, change: -0.15  },
+  TNX: { price: 4.34,  change: -0.09  },
 };
 
 const MOCK_NEWS = [
@@ -136,106 +127,21 @@ const generateSparkline = (base, volatility = 0.02, points = 24) => {
 // API FETCHERS
 // ─────────────────────────────────────────────
 
-// Crypto: Binance REST — no key, no CORS issues on Vercel
-const fetchCrypto = async () => {
-  const [btcRes, ethRes] = await Promise.all([
-    fetch("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"),
-    fetch("https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT"),
-  ]);
-  if (!btcRes.ok || !ethRes.ok) throw new Error("Binance REST error");
-  const [btc, eth] = await Promise.all([btcRes.json(), ethRes.json()]);
-  return {
-    BTC: { price: parseFloat(parseFloat(btc.lastPrice).toFixed(2)), change: parseFloat(parseFloat(btc.priceChangePercent).toFixed(2)) },
-    ETH: { price: parseFloat(parseFloat(eth.lastPrice).toFixed(2)), change: parseFloat(parseFloat(eth.priceChangePercent).toFixed(2)) },
-  };
-};
-
-// Stocks/ETFs/Futures: Yahoo Finance via allorigins CORS proxy
-const fetchYahoo = async (symbol) => {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d&_cb=${Date.now()}`;
-  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-  const res = await fetch(proxy, { cache: "no-store" });
-  const wrapper = await res.json();
-  const data = JSON.parse(wrapper.contents);
-  const meta = data?.chart?.result?.[0]?.meta;
-  if (!meta) throw new Error(`Yahoo no data for ${symbol}`);
-
-  const marketState = meta.marketState ?? "CLOSED"; // REGULAR | PRE | POST | CLOSED
-  const isLive = marketState === "REGULAR";
-
-  // Always use regularMarketPrice — this IS the last close when market is closed
-  const price  = parseFloat((meta.regularMarketPrice ?? 0).toFixed(2));
-  const change = parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2));
-
-  // previousClose for showing what changed from last session
-  const prevClose = parseFloat((meta.chartPreviousClose ?? meta.regularMarketPrice ?? 0).toFixed(2));
-
-  return { price, change, marketState, prevClose, isLive };
-};
-
-// DXY: fetch directly from Yahoo Finance via proxy — most accurate
-const fetchDXY = async () => {
-  const result = await fetchYahoo("DX-Y.NYB");
-  return { DXY: result };
-};
-
-// Fear & Greed: Alternative.me
-const fetchFearGreed = async () => {
-  const res = await fetch("https://api.alternative.me/fng/?limit=1");
-  if (!res.ok) throw new Error(`FearGreed ${res.status}`);
-  const data = await res.json();
-  return { value: parseInt(data.data[0].value), label: data.data[0].value_classification };
-};
-
-// VIX only from FMP — free tier includes indexes
-const fetchVIX = async () => {
-  if (!API_KEYS.FMP) throw new Error("No FMP key");
-  const res = await fetch(`https://financialmodelingprep.com/stable/quote?symbol=%5EVIX&apikey=${API_KEYS.FMP}`);
-  const data = await res.json();
-  if (!Array.isArray(data) || !data[0]) throw new Error("VIX empty");
-  return { price: parseFloat((data[0].price ?? 0).toFixed(2)), change: parseFloat((data[0].changePercentage ?? 0).toFixed(2)) };
-};
-
-const _todayStr = (offsetDays = 0) => {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-};
-
-// Persistent price cache
-const _priceCache = {};
-
+// All prices now fetched server-side via Vercel function — no CORS issues
 const fetchAllPrices = async ({ skipVIX = false } = {}) => {
-  // Crypto — Binance REST (no CORS issues)
   try {
-    const crypto = await fetchCrypto();
-    Object.assign(_priceCache, crypto);
-    // Crypto trades 24/7 — always live
-    _priceCache["BTC"].marketState = "REGULAR";
-    _priceCache["ETH"].marketState = "REGULAR";
-  } catch (e) { console.warn("[Binance REST]", e.message); }
+    const url = skipVIX ? "/api/prices?skipVIX=1" : "/api/prices";
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`/api/prices ${res.status}`);
+    const data = await res.json();
 
-  // VIX — FMP free tier, skip outside market hours to conserve quota
-  if (!skipVIX) {
-    try {
-      const vix = await fetchVIX();
-      _priceCache["VIX"] = { ...vix, marketState: getMarketStatus().isOpen ? "REGULAR" : "CLOSED" };
-    } catch (e) { console.warn("[VIX]", e.message); }
+    // Merge into cache
+    Object.entries(data).forEach(([id, val]) => {
+      if (val?.price) _priceCache[id] = val;
+    });
+  } catch (e) {
+    console.warn("[fetchAllPrices]", e.message);
   }
-
-  // SPY, QQQ, WTI, TNX — Yahoo via allorigins proxy (marketState comes from Yahoo)
-  await Promise.all([
-    fetchYahoo("SPY").then(r => { _priceCache["SPY"] = r; }).catch(e => console.warn("[Yahoo SPY]", e.message)),
-    fetchYahoo("QQQ").then(r => { _priceCache["QQQ"] = r; }).catch(e => console.warn("[Yahoo QQQ]", e.message)),
-    fetchYahoo("CL=F").then(r => { _priceCache["WTI"] = r; }).catch(e => console.warn("[Yahoo WTI]", e.message)),
-    fetchYahoo("^TNX").then(r => { _priceCache["TNX"] = r; }).catch(e => console.warn("[Yahoo TNX]", e.message)),
-  ]);
-
-  // DXY — Yahoo Finance direct
-  try {
-    const dxy = await fetchDXY();
-    Object.assign(_priceCache, dxy);
-  } catch (e) { console.warn("[DXY]", e.message); }
 
   return ASSET_META.map(meta => ({
     ...meta,
@@ -244,6 +150,14 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
     marketState: _priceCache[meta.id]?.marketState ?? "CLOSED",
     prevClose:   _priceCache[meta.id]?.prevClose   ?? null,
   }));
+};
+
+// Fear & Greed: Alternative.me (small payload, no CORS issues)
+const fetchFearGreed = async () => {
+  const res = await fetch("https://api.alternative.me/fng/?limit=1");
+  if (!res.ok) throw new Error(`FearGreed ${res.status}`);
+  const data = await res.json();
+  return { value: parseInt(data.data[0].value), label: data.data[0].value_classification };
 };
 
 const fetchNews = async () => {

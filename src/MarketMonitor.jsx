@@ -152,7 +152,6 @@ const fetchCrypto = async () => {
 
 // Stocks/ETFs/Futures: Yahoo Finance via allorigins CORS proxy
 const fetchYahoo = async (symbol) => {
-  // Add timestamp to bust allorigins cache — without this it serves data from months ago
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d&_cb=${Date.now()}`;
   const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
   const res = await fetch(proxy, { cache: "no-store" });
@@ -160,9 +159,18 @@ const fetchYahoo = async (symbol) => {
   const data = JSON.parse(wrapper.contents);
   const meta = data?.chart?.result?.[0]?.meta;
   if (!meta) throw new Error(`Yahoo no data for ${symbol}`);
+
+  const marketState = meta.marketState ?? "CLOSED"; // REGULAR | PRE | POST | CLOSED
+  const isLive = marketState === "REGULAR";
+
+  // Always use regularMarketPrice — this IS the last close when market is closed
   const price  = parseFloat((meta.regularMarketPrice ?? 0).toFixed(2));
   const change = parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2));
-  return { price, change };
+
+  // previousClose for showing what changed from last session
+  const prevClose = parseFloat((meta.chartPreviousClose ?? meta.regularMarketPrice ?? 0).toFixed(2));
+
+  return { price, change, marketState, prevClose, isLive };
 };
 
 // DXY: fetch directly from Yahoo Finance via proxy — most accurate
@@ -202,16 +210,20 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
   try {
     const crypto = await fetchCrypto();
     Object.assign(_priceCache, crypto);
+    // Crypto trades 24/7 — always live
+    _priceCache["BTC"].marketState = "REGULAR";
+    _priceCache["ETH"].marketState = "REGULAR";
   } catch (e) { console.warn("[Binance REST]", e.message); }
 
   // VIX — FMP free tier, skip outside market hours to conserve quota
   if (!skipVIX) {
     try {
-      _priceCache["VIX"] = await fetchVIX();
+      const vix = await fetchVIX();
+      _priceCache["VIX"] = { ...vix, marketState: getMarketStatus().isOpen ? "REGULAR" : "CLOSED" };
     } catch (e) { console.warn("[VIX]", e.message); }
   }
 
-  // SPY, QQQ, WTI, TNX — Yahoo via allorigins proxy (no FMP quota used)
+  // SPY, QQQ, WTI, TNX — Yahoo via allorigins proxy (marketState comes from Yahoo)
   await Promise.all([
     fetchYahoo("SPY").then(r => { _priceCache["SPY"] = r; }).catch(e => console.warn("[Yahoo SPY]", e.message)),
     fetchYahoo("QQQ").then(r => { _priceCache["QQQ"] = r; }).catch(e => console.warn("[Yahoo QQQ]", e.message)),
@@ -227,8 +239,10 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
 
   return ASSET_META.map(meta => ({
     ...meta,
-    price: parseFloat((_priceCache[meta.id]?.price ?? MOCK_PRICES[meta.id].price).toFixed(2)),
-    change: parseFloat((_priceCache[meta.id]?.change ?? MOCK_PRICES[meta.id].change).toFixed(2)),
+    price:       parseFloat((_priceCache[meta.id]?.price       ?? MOCK_PRICES[meta.id].price).toFixed(2)),
+    change:      parseFloat((_priceCache[meta.id]?.change      ?? MOCK_PRICES[meta.id].change).toFixed(2)),
+    marketState: _priceCache[meta.id]?.marketState ?? "CLOSED",
+    prevClose:   _priceCache[meta.id]?.prevClose   ?? null,
   }));
 };
 
@@ -552,6 +566,10 @@ const AssetCard = memo(({ asset }) => {
 
   const isPos = asset.change >= 0;
   const color = sentimentColor(asset.change);
+  const isLive = asset.marketState === "REGULAR";
+  const isClosed = asset.marketState === "CLOSED" || !asset.marketState;
+  // Crypto is always live — never show closed
+  const showClosed = isClosed && asset.category !== "crypto";
 
   // dollar change from sparkline start
   const sparkFirst = asset.sparkline?.[0]?.v ?? asset.price;
@@ -590,26 +608,35 @@ const AssetCard = memo(({ asset }) => {
             <span style={{ fontSize: 11, color: "#999", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
               {asset.id}
             </span>
-            <div style={{
-              width: 5, height: 5, borderRadius: "50%",
-              background: justUpdated ? "#00ff88" : "#2a2a2a",
-              boxShadow: justUpdated ? "0 0 6px #00ff88" : "none",
-              transition: "background 0.3s, box-shadow 0.3s",
-              flexShrink: 0,
-            }} />
-            {isNearHigh && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(0,255,136,0.15)", color: "#00ff88", fontFamily: "'Space Mono', monospace" }}>24H HI</span>}
-            {isNearLow  && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(255,68,102,0.15)", color: "#ff4466", fontFamily: "'Space Mono', monospace" }}>24H LO</span>}
+            {showClosed ? (
+              <span style={{
+                fontSize: 8, padding: "1px 5px", borderRadius: 2,
+                background: "rgba(255,255,255,0.05)", color: "#555",
+                fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+                border: "1px solid rgba(255,255,255,0.08)", whiteSpace: "nowrap",
+              }}>LAST CLOSE</span>
+            ) : (
+              <div style={{
+                width: 5, height: 5, borderRadius: "50%",
+                background: justUpdated ? "#00ff88" : "#2a2a2a",
+                boxShadow: justUpdated ? "0 0 6px #00ff88" : "none",
+                transition: "background 0.3s, box-shadow 0.3s",
+                flexShrink: 0,
+              }} />
+            )}
+            {!showClosed && isNearHigh && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(0,255,136,0.15)", color: "#00ff88", fontFamily: "'Space Mono', monospace" }}>24H HI</span>}
+            {!showClosed && isNearLow  && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(255,68,102,0.15)", color: "#ff4466", fontFamily: "'Space Mono', monospace" }}>24H LO</span>}
           </div>
           <div style={{ fontSize: 12, color: "#888" }}>{asset.label}</div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "#f0f0f0", fontFamily: "'Space Mono', monospace", letterSpacing: -0.5 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: showClosed ? "#888" : "#f0f0f0", fontFamily: "'Space Mono', monospace", letterSpacing: -0.5 }}>
             {fmtPrice(asset.price, asset.unit)}
           </div>
-          <div style={{ fontSize: 11, color, fontWeight: 700, fontFamily: "'Space Mono', monospace" }}>
+          <div style={{ fontSize: 11, color: showClosed ? "#555" : color, fontWeight: 700, fontFamily: "'Space Mono', monospace" }}>
             {fmtChange(asset.change)}
           </div>
-          <div style={{ fontSize: 10, color, opacity: 0.65, fontFamily: "'Space Mono', monospace" }}>
+          <div style={{ fontSize: 10, color: showClosed ? "#444" : color, opacity: 0.65, fontFamily: "'Space Mono', monospace" }}>
             {dollarStr}
           </div>
         </div>

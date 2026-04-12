@@ -1262,17 +1262,13 @@ export default function MarketMonitor() {
   const [isPaused, setIsPaused] = useState(false);
   const { assets, lastUpdated, error, wsConnected } = useMarketData(isPaused);
   const { alerts, notifications } = useAlerts(assets);
-  const { news } = useNews();
-  const { feed: socialFeed } = useSocialFeed();
   const time = useClock();
   const fearGreed = useFearGreed();
   const { refresh: refreshFearGreed, refreshing: fgRefreshing } = fearGreed;
-  const [activeTab, setActiveTab] = useState("news");
   const [centerTab, setCenterTab] = useState("market");
   const [riskMode, setRiskMode] = useState("on");
   const [showSidebar, setShowSidebar] = useState(true);
   const alertsFeedRef = useRef(null);
-  const [marketStatus, setMarketStatus] = useState("LIVE");
 
   const isMarketOpen = () => getMarketStatus().isOpen;
 
@@ -1658,30 +1654,112 @@ export default function MarketMonitor() {
         </div>
         {showSidebar && (
         <div style={{ background: "#0a0a0f", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {/* Tabs */}
-          <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.07)", padding: "6px 12px 0", flexShrink: 0 }}>
-            {[
-              { id: "news",    label: "News" },
-              { id: "social",  label: "Social" },
-              { id: "youtube", label: "Creators" },
-            ].map(tab => (
-              <button key={tab.id} className={`tab-btn ${activeTab === tab.id ? "tab-active" : ""}`}
-                style={{ color: activeTab === tab.id ? "#00ff88" : "#666" }}
-                onClick={() => setActiveTab(tab.id)}>
-                {tab.label}
-              </button>
-            ))}
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4, paddingBottom: 6 }}>
-              <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#00ff88", animation: "pulse 1.5s infinite" }} />
-              <span style={{ fontSize: 9, color: "#00ff88", fontFamily: "'Space Mono', monospace" }}>LIVE</span>
-            </div>
+
+          {/* Header */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.07)", flexShrink: 0 }}>
+            <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>Quick Links</span>
+            <span style={{ fontSize: 10, color: "#444" }}>Click to open in new tab</span>
           </div>
 
-          {/* Feed */}
-          <div style={{ flex: 1, overflowY: "auto", padding: activeTab === "youtube" ? "0" : "0 12px" }}>
-            {activeTab === "news"    && news.map(item => <NewsItem key={item.id} item={item} />)}
-            {activeTab === "social"  && socialFeed.map(item => <SocialItem key={item.id} item={item} />)}
-            {activeTab === "youtube" && <LiveStreamPanel />}
+          <div style={{ flex: 1, overflowY: "auto", padding: "12px" }}>
+
+            {/* News Sources */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 9, color: "#444", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 8, paddingLeft: 4, borderLeft: "2px solid #333" }}>
+                Financial News
+              </div>
+              {[
+                { name: "Reuters Markets",     url: "https://www.reuters.com/markets/",              desc: "Global markets coverage" },
+                { name: "Bloomberg Markets",   url: "https://www.bloomberg.com/markets",              desc: "Live market data & news" },
+                { name: "CNBC Markets",        url: "https://www.cnbc.com/markets/",                  desc: "US market news" },
+                { name: "Wall Street Journal", url: "https://www.wsj.com/news/markets",               desc: "Market & business news" },
+                { name: "Financial Times",     url: "https://www.ft.com/markets",                     desc: "Global financial news" },
+                { name: "MarketWatch",         url: "https://www.marketwatch.com/",                   desc: "Real-time quotes & news" },
+                { name: "Seeking Alpha",       url: "https://seekingalpha.com/market-news/all",       desc: "Analysis & market news" },
+                { name: "ZeroHedge",           url: "https://www.zerohedge.com/",                     desc: "Alternative finance news" },
+              ].map(link => (
+                <a key={link.name} href={link.url} target="_blank" rel="noopener noreferrer" style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "8px 10px", marginBottom: 4, borderRadius: 6, textDecoration: "none",
+                  background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                  transition: "background 0.15s, border-color 0.15s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,255,136,0.06)"; e.currentTarget.style.borderColor = "rgba(0,255,136,0.2)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.02)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)"; }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#d4d4d4" }}>{link.name}</div>
+                    <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{link.desc}</div>
+                  </div>
+                  <span style={{ fontSize: 12, color: "#444" }}>↗</span>
+                </a>
+              ))}
+            </div>
+
+            {/* Social / Political */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 9, color: "#444", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 8, paddingLeft: 4, borderLeft: "2px solid #333" }}>
+                Social Signals
+              </div>
+              {[
+                { name: "Trump — Truth Social",  url: "https://truthsocial.com/@realDonaldTrump",  desc: "Market-moving posts", color: "#ff6b35" },
+                { name: "Elon Musk — X",          url: "https://x.com/elonmusk",                    desc: "Market commentary",   color: "#1da1f2" },
+                { name: "Federal Reserve",         url: "https://x.com/federalreserve",              desc: "Official Fed updates", color: "#5865f2" },
+                { name: "Lyn Alden",               url: "https://x.com/LynAldenContact",             desc: "Macro analysis",      color: "#00ff88" },
+                { name: "ZeroHedge",               url: "https://x.com/zerohedge",                   desc: "Breaking market news", color: "#ff4466" },
+                { name: "Raoul Pal",               url: "https://x.com/RaoulGMI",                    desc: "Macro & crypto",      color: "#ffd700" },
+              ].map(link => (
+                <a key={link.name} href={link.url} target="_blank" rel="noopener noreferrer" style={{
+                  display: "flex", alignItems: "center", gap: 10,
+                  padding: "8px 10px", marginBottom: 4, borderRadius: 6, textDecoration: "none",
+                  background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                  transition: "background 0.15s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = `rgba(${link.color === "#ff6b35" ? "255,107,53" : link.color === "#1da1f2" ? "29,161,242" : link.color === "#00ff88" ? "0,255,136" : link.color === "#ff4466" ? "255,68,102" : link.color === "#ffd700" ? "255,215,0" : "88,101,242"},0.08)`; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: "50%", background: link.color,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 9, fontWeight: 800, color: "#0a0a0f", flexShrink: 0, fontFamily: "'Space Mono', monospace",
+                  }}>{link.name.slice(0,2).toUpperCase()}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#d4d4d4" }}>{link.name}</div>
+                    <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{link.desc}</div>
+                  </div>
+                  <span style={{ fontSize: 12, color: "#444" }}>↗</span>
+                </a>
+              ))}
+            </div>
+
+            {/* YouTube Creators */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 9, color: "#444", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 8, paddingLeft: 4, borderLeft: "2px solid #333" }}>
+                YouTube Creators
+              </div>
+              {[
+                { name: "Amit",            url: "https://www.youtube.com/@amitinvesting",  color: "#ff4466" },
+                { name: "Steven Fiorillo", url: "https://www.youtube.com/@StevenFiorillo", color: "#00aaff" },
+                { name: "Future Investing",url: "https://www.youtube.com/@FutureInvesting", color: "#00ff88" },
+                { name: "Tevis Howard",    url: "https://www.youtube.com/@tevishoward",    color: "#ffd700" },
+              ].map(link => (
+                <a key={link.name} href={link.url} target="_blank" rel="noopener noreferrer" style={{
+                  display: "flex", alignItems: "center", gap: 10,
+                  padding: "8px 10px", marginBottom: 4, borderRadius: 6, textDecoration: "none",
+                  background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                  transition: "background 0.15s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,68,102,0.06)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: "50%", background: link.color,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 9, fontWeight: 800, color: "#0a0a0f", flexShrink: 0, fontFamily: "'Space Mono', monospace",
+                  }}>{link.name.slice(0,2).toUpperCase()}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#d4d4d4", flex: 1 }}>{link.name}</div>
+                  <span style={{ fontSize: 12, color: "#444" }}>↗</span>
+                </a>
+              ))}
+            </div>
+
           </div>
         </div>
         )}

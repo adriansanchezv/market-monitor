@@ -104,8 +104,25 @@ const MOCK_SOCIAL = [
 ];
 
 // ─────────────────────────────────────────────
-// SPARKLINE HELPER
+// MARKET HOURS HELPER (ET timezone)
 // ─────────────────────────────────────────────
+const getMarketStatus = () => {
+  const now = new Date();
+  // Convert to ET (UTC-4 EDT / UTC-5 EST)
+  const etOffset = -5 * 60; // EST base
+  const isDST = (() => {
+    const jan = new Date(now.getFullYear(), 0, 1).getTimezoneOffset();
+    const jul = new Date(now.getFullYear(), 6, 1).getTimezoneOffset();
+    return now.getTimezoneOffset() < Math.max(jan, jul);
+  })();
+  const etMs = now.getTime() + (now.getTimezoneOffset() + etOffset + (isDST ? 60 : 0)) * 60000;
+  const et = new Date(etMs);
+  const day = et.getDay(); // 0=Sun, 6=Sat
+  const mins = et.getHours() * 60 + et.getMinutes();
+  const isWeekday = day >= 1 && day <= 5;
+  const isMarketHours = mins >= 9 * 60 + 30 && mins < 16 * 60;
+  return { isOpen: isWeekday && isMarketHours, et };
+};
 const generateSparkline = (base, volatility = 0.02, points = 24) => {
   const data = []; let val = base;
   for (let i = 0; i < points; i++) {
@@ -180,19 +197,21 @@ const _todayStr = (offsetDays = 0) => {
 // Persistent price cache
 const _priceCache = {};
 
-const fetchAllPrices = async () => {
+const fetchAllPrices = async ({ skipVIX = false } = {}) => {
   // Crypto — Binance REST (no CORS issues)
   try {
     const crypto = await fetchCrypto();
     Object.assign(_priceCache, crypto);
   } catch (e) { console.warn("[Binance REST]", e.message); }
 
-  // VIX — FMP free tier works
-  try {
-    _priceCache["VIX"] = await fetchVIX();
-  } catch (e) { console.warn("[VIX]", e.message); }
+  // VIX — FMP free tier, skip outside market hours to conserve quota
+  if (!skipVIX) {
+    try {
+      _priceCache["VIX"] = await fetchVIX();
+    } catch (e) { console.warn("[VIX]", e.message); }
+  }
 
-  // SPY, QQQ, WTI, TNX — Yahoo via allorigins proxy
+  // SPY, QQQ, WTI, TNX — Yahoo via allorigins proxy (no FMP quota used)
   await Promise.all([
     fetchYahoo("SPY").then(r => { _priceCache["SPY"] = r; }).catch(e => console.warn("[Yahoo SPY]", e.message)),
     fetchYahoo("QQQ").then(r => { _priceCache["QQQ"] = r; }).catch(e => console.warn("[Yahoo QQQ]", e.message)),
@@ -200,7 +219,7 @@ const fetchAllPrices = async () => {
     fetchYahoo("^TNX").then(r => { _priceCache["TNX"] = r; }).catch(e => console.warn("[Yahoo TNX]", e.message)),
   ]);
 
-  // DXY — real formula
+  // DXY — Yahoo Finance direct
   try {
     const dxy = await fetchDXY();
     Object.assign(_priceCache, dxy);
@@ -247,7 +266,7 @@ const BINANCE_ID_MAP   = { BTCUSDT: "BTC", ETHUSDT: "ETH" };
 const IS_LOCALHOST     = typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
-const useMarketData = () => {
+const useMarketData = (isPaused = false) => {
   const [assets, setAssets] = useState(() =>
     ASSET_META.map(meta => ({
       ...meta,
@@ -297,15 +316,13 @@ const useMarketData = () => {
   }, [updateAsset]);
 
   // ── Polling — always runs, handles all non-WS assets ────────────────
-  // On localhost: polls crypto via CoinGecko every 35s
-  // On deployed:  polls everything except BTC/ETH (WebSocket handles those)
   const fetchAndUpdate = useCallback(async () => {
+    if (isPaused) return; // paused — skip this cycle
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
     try {
-      const fresh = await fetchAllPrices();
+      const fresh = await fetchAllPrices({ skipVIX: !getMarketStatus().isOpen });
       setAssets(prev => fresh.map(asset => {
-        // On deployed site, skip crypto — WebSocket is handling it
         if (!IS_LOCALHOST && (asset.id === "BTC" || asset.id === "ETH")) {
           return prev.find(p => p.id === asset.id) ?? asset;
         }
@@ -321,7 +338,7 @@ const useMarketData = () => {
     } catch (e) {
       if (e.name !== "AbortError") { console.error("[useMarketData]", e); setError(e.message); }
     }
-  }, []);
+  }, [isPaused]);
 
   useEffect(() => {
     connectWS();
@@ -1301,7 +1318,8 @@ const PrivateCreditPanel = memo(() => {
   );
 });
 export default function MarketMonitor() {
-  const { assets, lastUpdated, error, wsConnected } = useMarketData();
+  const [isPaused, setIsPaused] = useState(false);
+  const { assets, lastUpdated, error, wsConnected } = useMarketData(isPaused);
   const { alerts, notifications } = useAlerts(assets);
   const { news } = useNews();
   const { feed: socialFeed } = useSocialFeed();
@@ -1315,12 +1333,7 @@ export default function MarketMonitor() {
   const alertsFeedRef = useRef(null);
   const [marketStatus, setMarketStatus] = useState("LIVE");
 
-  const isMarketOpen = () => {
-    const h = time.getHours(), m = time.getMinutes(), day = time.getDay();
-    if (day === 0 || day === 6) return false;
-    const mins = h * 60 + m;
-    return mins >= 9 * 60 + 30 && mins <= 16 * 60;
-  };
+  const isMarketOpen = () => getMarketStatus().isOpen;
 
   const sentimentScore = assets.reduce((acc, a) => {
     return acc + (a.change >= 0 ? 1 : -1) * Math.abs(a.change);
@@ -1409,6 +1422,18 @@ export default function MarketMonitor() {
             RISK {riskMode.toUpperCase()}
           </button>
           <button
+            onClick={() => setIsPaused(p => !p)}
+            title={isPaused ? "Resume live data" : "Pause live data"}
+            style={{
+              background: isPaused ? "rgba(255,215,0,0.15)" : "rgba(255,255,255,0.03)",
+              border: `1px solid ${isPaused ? "rgba(255,215,0,0.4)" : "rgba(255,255,255,0.12)"}`,
+              color: isPaused ? "#ffd700" : "#555",
+              padding: "4px 10px", borderRadius: 4, cursor: "pointer",
+              fontSize: 12, lineHeight: 1,
+            }}>
+            {isPaused ? "▶" : "⏸"}
+          </button>
+          <button
             onClick={() => setShowSidebar(s => !s)}
             title="Toggle news/social panel"
             style={{
@@ -1446,8 +1471,8 @@ export default function MarketMonitor() {
                 boxShadow: wsConnected ? "0 0 6px #00ff88" : "none",
                 animation: wsConnected ? "pulse 2s infinite" : "none",
               }} />
-              <span style={{ fontSize: 9, color: wsConnected ? "#00ff88" : IS_LOCALHOST ? "#555" : "#ffd700", fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
-                {wsConnected ? "WS LIVE" : IS_LOCALHOST ? "POLLING" : "WS OFF"}
+              <span style={{ fontSize: 9, color: isPaused ? "#ffd700" : wsConnected ? "#00ff88" : IS_LOCALHOST ? "#555" : "#ffd700", fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
+                {isPaused ? "PAUSED" : wsConnected ? "WS LIVE" : IS_LOCALHOST ? "POLLING" : "WS OFF"}
               </span>
             </div>
           </div>

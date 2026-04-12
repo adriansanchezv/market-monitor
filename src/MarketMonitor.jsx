@@ -171,6 +171,7 @@ const fetchStocks = async () => {
   try {
     const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/SPY,QQQ?apikey=${key}`);
     const data = await res.json();
+    console.log("[FMP SPY/QQQ]", JSON.stringify(data).slice(0, 200));
     if (Array.isArray(data)) {
       data.forEach(q => {
         out[q.symbol] = { price: parseFloat((q.price ?? 0).toFixed(2)), change: parseFloat((q.changesPercentage ?? 0).toFixed(2)) };
@@ -182,6 +183,7 @@ const fetchStocks = async () => {
   try {
     const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/%5EVIX?apikey=${key}`);
     const data = await res.json();
+    console.log("[FMP VIX]", JSON.stringify(data).slice(0, 200));
     if (Array.isArray(data) && data[0]) {
       out["VIX"] = { price: parseFloat((data[0].price ?? 0).toFixed(2)), change: parseFloat((data[0].changesPercentage ?? 0).toFixed(2)) };
     }
@@ -191,29 +193,31 @@ const fetchStocks = async () => {
   try {
     const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/USOIL?apikey=${key}`);
     const data = await res.json();
+    console.log("[FMP WTI USOIL]", JSON.stringify(data).slice(0, 200));
     if (Array.isArray(data) && data[0]) {
       out["WTI"] = { price: parseFloat((data[0].price ?? 0).toFixed(2)), change: parseFloat((data[0].changesPercentage ?? 0).toFixed(2)) };
     }
   } catch (e) {
-    // fallback: try CL=F (WTI futures)
     try {
       const res2 = await fetch(`https://financialmodelingprep.com/api/v3/quote/CLUSD?apikey=${key}`);
       const data2 = await res2.json();
+      console.log("[FMP WTI CLUSD]", JSON.stringify(data2).slice(0, 200));
       if (Array.isArray(data2) && data2[0]) {
         out["WTI"] = { price: parseFloat((data2[0].price ?? 0).toFixed(2)), change: parseFloat((data2[0].changesPercentage ?? 0).toFixed(2)) };
       }
     } catch (e2) { console.warn("[FMP WTI]", e2.message); }
   }
 
-  // TNX — Treasury rates API (returns rate directly, not as a quote)
+  // TNX — Treasury rates API
   try {
     const res = await fetch(`https://financialmodelingprep.com/api/v4/treasury?from=${_todayStr()}&to=${_todayStr()}&apikey=${key}`);
     const data = await res.json();
+    console.log("[FMP TNX]", JSON.stringify(data).slice(0, 200));
     if (Array.isArray(data) && data[0]) {
-      const rate = data[0].year10; // 10-year yield as decimal e.g. 0.0438
+      const rate = data[0].year10;
       if (rate) {
         const prev = _priceCache["TNX"]?.price ?? 4.38;
-        const price = parseFloat((rate * 100).toFixed(2)); // convert to percentage display
+        const price = parseFloat((rate * 100).toFixed(2));
         out["TNX"] = { price, change: parseFloat(((price - prev) / prev * 100).toFixed(2)) };
       }
     }

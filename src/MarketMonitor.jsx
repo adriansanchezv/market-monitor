@@ -398,13 +398,27 @@ const useMarketData = (isPaused = false) => {
   const wsReconnectRef = useRef(null);
 
   // ── update one asset in state + cache ───────────────────────────────
-  const updateAsset = useCallback((id, price, change) => {
-    _priceCache[id] = { price, change };
+  // Accepts a normalized data object matching the backend shape:
+  // { price, change, percentChange, source, confidence, status, timestamp, cached }
+  const updateAsset = useCallback((id, normalized) => {
+    // Write full normalized object to cache so UI picks up source/confidence/etc.
+    _priceCache[id] = normalized;
     setAssets(prev => prev.map(asset => {
       if (asset.id !== id) return asset;
-      const newSparkline = [...asset.sparkline.slice(1), { v: price, t: Date.now() }];
-      return { ...asset, price, change, sparkline: newSparkline,
-        flash: price > asset.price ? "up" : price < asset.price ? "down" : null, loading: false };
+      const newSparkline = [...asset.sparkline.slice(1), { v: normalized.price, t: Date.now() }];
+      return {
+        ...asset,
+        price:       normalized.price,
+        change:      normalized.change,
+        source:      normalized.source,
+        confidence:  normalized.confidence,
+        status:      normalized.status,
+        timestamp:   normalized.timestamp,
+        cached:      normalized.cached,
+        sparkline:   newSparkline,
+        flash:       normalized.price > asset.price ? "up" : normalized.price < asset.price ? "down" : null,
+        loading:     false,
+      };
     }));
     setLastUpdated(new Date());
   }, []);
@@ -422,7 +436,26 @@ const useMarketData = (isPaused = false) => {
         if (!tick?.s) return;
         const id = BINANCE_ID_MAP[tick.s];
         if (!id) return;
-        updateAsset(id, parseFloat(parseFloat(tick.c).toFixed(2)), parseFloat(parseFloat(tick.P).toFixed(2)));
+
+        // Normalize Binance tick to match backend standardized shape
+        const price        = parseFloat(parseFloat(tick.c).toFixed(2));
+        const percentChange= parseFloat(parseFloat(tick.P).toFixed(2));
+        const change       = parseFloat(parseFloat(tick.p).toFixed(2)); // tick.p = price change in $
+        const prevClose    = parseFloat((price - change).toFixed(2));
+
+        updateAsset(id, {
+          symbol:       id,
+          price,
+          change,
+          percentChange,
+          prevClose,
+          marketState:  "REGULAR",  // crypto is always live
+          source:       "Binance",
+          confidence:   "high",
+          status:       "valid",
+          cached:       false,
+          timestamp:    new Date().toISOString(),
+        });
       } catch (_) {}
     };
     ws.onerror = () => { setWsConnected(false); };
@@ -888,10 +921,21 @@ const AssetCard = memo(({ asset, debugMode }) => {
   const isLowConf     = confidence === "low";
   const isMediumConf  = confidence === "medium";
 
-  // Source label — short 2-3 char abbreviation shown bottom-left
-  const SOURCE_LABELS = { Finnhub: "FH", FMP: "FMP", Yahoo: "YH", Binance: "BN", fallback: "FB" };
-  const sourceLabel   = SOURCE_LABELS[asset.source] ?? asset.source?.slice(0, 3).toUpperCase() ?? "?";
-  const isCached      = asset.cached === true;
+  // Source label — per-source style + tooltip text
+  // null = don't render badge at all
+  const SOURCE_CONFIG = {
+    Binance: { label: "BN",  title: "Real-time (WebSocket)", color: "#00ff88", bg: "rgba(0,255,136,0.12)", border: "rgba(0,255,136,0.25)" },
+    binance: { label: "BN",  title: "Real-time (WebSocket)", color: "#00ff88", bg: "rgba(0,255,136,0.12)", border: "rgba(0,255,136,0.25)" },
+    Finnhub: { label: "FH",  title: "Primary API",           color: "#aaaaaa", bg: "rgba(255,255,255,0.06)", border: "rgba(255,255,255,0.12)" },
+    finnhub: { label: "FH",  title: "Primary API",           color: "#aaaaaa", bg: "rgba(255,255,255,0.06)", border: "rgba(255,255,255,0.12)" },
+    FMP:     { label: "FMP", title: "Fallback API",          color: "#666666", bg: "rgba(255,255,255,0.03)", border: "rgba(255,255,255,0.07)" },
+    fmp:     { label: "FMP", title: "Fallback API",          color: "#666666", bg: "rgba(255,255,255,0.03)", border: "rgba(255,255,255,0.07)" },
+    Yahoo:   { label: "YH",  title: "Fallback API",          color: "#666666", bg: "rgba(255,255,255,0.03)", border: "rgba(255,255,255,0.07)" },
+    yahoo:   { label: "YH",  title: "Fallback API",          color: "#666666", bg: "rgba(255,255,255,0.03)", border: "rgba(255,255,255,0.07)" },
+  };
+  const sourceCfg   = SOURCE_CONFIG[asset.source] ?? null;
+  const sourceLabel = sourceCfg?.label ?? null;
+  const isCached    = asset.cached === true;
 
   // dollar change from sparkline start
   const sparkFirst = asset.sparkline?.[0]?.v ?? asset.price;
@@ -989,18 +1033,20 @@ const AssetCard = memo(({ asset, debugMode }) => {
       {/* Source label + cache indicator — always visible, small */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          {/* Source badge */}
-          <span style={{
-            fontSize: 8, padding: "1px 4px", borderRadius: 2,
-            background: isLowConf   ? "rgba(255,68,102,0.1)"
-                       : isMediumConf ? "rgba(255,215,0,0.08)"
-                       : "rgba(0,255,136,0.08)",
-            color: isLowConf   ? "#ff4466"
-                 : isMediumConf ? "#ffd700"
-                 : "#00ff88",
-            fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
-            border: `1px solid ${isLowConf ? "rgba(255,68,102,0.2)" : isMediumConf ? "rgba(255,215,0,0.15)" : "rgba(0,255,136,0.15)"}`,
-          }}>{sourceLabel}</span>
+          {/* Source badge — only shown for known sources */}
+          {sourceLabel && (
+            <span style={{
+              fontSize: 8, padding: "1px 4px", borderRadius: 2,
+              background: isLowConf   ? "rgba(255,68,102,0.1)"
+                         : isMediumConf ? "rgba(255,215,0,0.08)"
+                         : "rgba(0,255,136,0.08)",
+              color: isLowConf   ? "#ff4466"
+                   : isMediumConf ? "#ffd700"
+                   : "#00ff88",
+              fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+              border: `1px solid ${isLowConf ? "rgba(255,68,102,0.2)" : isMediumConf ? "rgba(255,215,0,0.15)" : "rgba(0,255,136,0.15)"}`,
+            }}>{sourceLabel}</span>
+          )}
           {/* Cache indicator — only show when serving cached data */}
           {isCached && (
             <span style={{

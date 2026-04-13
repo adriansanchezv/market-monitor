@@ -1380,20 +1380,102 @@ const useIsMobile = (breakpoint = 768) => {
 // Collapsible section hook — one state key per section id
 const useCollapsible = (sections) => {
   const [open, setOpen] = useState(() =>
-    Object.fromEntries(sections.map(s => [s, true]))
+    Object.fromEntries(sections.map(s => [s, false]))  // start closed — user opens what they need
   );
   const toggle = (id) => setOpen(prev => ({ ...prev, [id]: !prev[id] }));
   return { open, toggle };
 };
 
 /**
- * MobileCoreSignalCard
- * Large "above the fold" summary for mobile.
- * Shows the 3 most important signals at a glance.
+// ─────────────────────────────────────────────
+// ONE GLANCE MODE — mobile daily driver
+// ─────────────────────────────────────────────
+
+/**
+ * getActionTag({ regime, riskLevel, setup, btcChange })
+ * Derives a single actionable label from system state.
+ * One output, no ambiguity.
  */
-const MobileCoreSignalCard = memo(({ assets, regime, lagSignals }) => {
-  const vix = assets.find(a => a.id === "VIX");
+function getActionTag({ regime, riskLevel, setup, btcChange }) {
+  // REDUCE RISK — any danger signal
+  if (regime === "RISK OFF" || riskLevel === "HIGH") {
+    return { tag: "REDUCE RISK", color: "#ff4466", bg: "rgba(255,68,102,0.12)", border: "rgba(255,68,102,0.3)" };
+  }
+  // BUILD POSITION — all green
+  if (regime === "RISK ON" && riskLevel === "LOW" && setup?.type === "LONG") {
+    return { tag: "BUILD POSITION", color: "#00ff88", bg: "rgba(0,255,136,0.12)", border: "rgba(0,255,136,0.3)" };
+  }
+  // SCALE IN — good regime, medium risk or setup
+  if (regime === "RISK ON" && riskLevel !== "HIGH") {
+    return { tag: "SCALE IN", color: "#00ff88", bg: "rgba(0,255,136,0.08)", border: "rgba(0,255,136,0.2)" };
+  }
+  // WAIT — everything else
+  return { tag: "WAIT", color: "#ffd700", bg: "rgba(255,215,0,0.08)", border: "rgba(255,215,0,0.2)" };
+}
+
+/**
+ * useWhatChanged(assets, regime)
+ * Tracks the last 6 notable changes — regime shifts, BTC moves,
+ * VIX crossings, setup fires. Stored in a ref so no extra renders.
+ */
+const useWhatChanged = (assets, regime) => {
+  const [changes, setChanges] = useState([]);
+  const prevRef = useRef({ regime: null, btcChange: 0, vixPrice: 0, setupType: null });
+
+  useEffect(() => {
+    if (!assets?.length) return;
+    const btc = assets.find(a => a.id === "BTC");
+    const vix = assets.find(a => a.id === "VIX");
+    const now = Date.now();
+    const events = [];
+
+    const btcChange = btc?.change ?? 0;
+    const vixPrice  = vix?.price  ?? 0;
+    const prev      = prevRef.current;
+
+    // BTC move > 1.5%
+    if (Math.abs(btcChange) >= 1.5 && Math.abs(prev.btcChange) < 1.5) {
+      events.push({
+        id: `btc_${now}`, time: now,
+        text: `BTC ${btcChange >= 0 ? "+" : ""}${btcChange.toFixed(1)}%`,
+        color: btcChange >= 0 ? "#00ff88" : "#ff4466",
+      });
+    }
+
+    // VIX crossing 20 or 25
+    if (prev.vixPrice > 0) {
+      if (vixPrice >= 25 && prev.vixPrice < 25)
+        events.push({ id: `vix25_${now}`, time: now, text: "VIX crossed 25", color: "#ff4466" });
+      else if (vixPrice < 25 && prev.vixPrice >= 25)
+        events.push({ id: `vix25d_${now}`, time: now, text: "VIX fell below 25", color: "#00ff88" });
+      else if (vixPrice >= 20 && prev.vixPrice < 20)
+        events.push({ id: `vix20_${now}`, time: now, text: "VIX crossed 20", color: "#ffd700" });
+      else if (vixPrice < 20 && prev.vixPrice >= 20)
+        events.push({ id: `vix20d_${now}`, time: now, text: "VIX fell below 20", color: "#00ff88" });
+    }
+
+    // Regime change
+    if (prev.regime && regime !== prev.regime)
+      events.push({ id: `reg_${now}`, time: now, text: `Regime → ${regime}`,
+        color: regime === "RISK ON" ? "#00ff88" : regime === "RISK OFF" ? "#ff4466" : "#ffd700" });
+
+    if (events.length > 0) {
+      setChanges(prev => [...events, ...prev].slice(0, 6));
+    }
+
+    prevRef.current = { regime, btcChange, vixPrice, setupType: prev.setupType };
+  }, [assets, regime]);
+
+  return changes;
+};
+
+/**
+ * OneGlanceMode — the entire mobile "above the fold" experience.
+ * Readable in under 2 seconds. Replaces MobileCoreSignalCard.
+ */
+const OneGlanceMode = memo(({ assets, regime, lagSignals }) => {
   const btc = assets.find(a => a.id === "BTC");
+  const vix = assets.find(a => a.id === "VIX");
 
   const { level: riskLevel, score: riskScore } = calculateLeverageRisk({
     btcChange:    btc?.change    ?? 0,
@@ -1409,76 +1491,126 @@ const MobileCoreSignalCard = memo(({ assets, regime, lagSignals }) => {
     lagSignals: lagSignals.map(s => s.signal ?? s),
   });
 
-  const REGIME_COLORS = {
-    "RISK ON":  { color: "#00ff88", bg: "rgba(0,255,136,0.07)",  border: "rgba(0,255,136,0.2)"  },
-    "NEUTRAL":  { color: "#ffd700", bg: "rgba(255,215,0,0.07)",  border: "rgba(255,215,0,0.2)"  },
-    "RISK OFF": { color: "#ff4466", bg: "rgba(255,68,102,0.07)", border: "rgba(255,68,102,0.2)" },
-  };
-  const RISK_COLORS = { LOW: "#00ff88", MEDIUM: "#ffd700", HIGH: "#ff4466" };
+  const action = getActionTag({ regime, riskLevel, setup, btcChange: btc?.change ?? 0 });
+  const changes = useWhatChanged(assets, regime);
 
-  const cfg      = REGIME_COLORS[regime] ?? REGIME_COLORS["NEUTRAL"];
-  const riskColor= RISK_COLORS[riskLevel];
-  const setupColor = setup.type === "LONG" ? "#00ff88" : setup.type === "SHORT" ? "#ff4466" : null;
+  const REGIME_COLORS = {
+    "RISK ON":  { color: "#00ff88", bg: "rgba(0,255,136,0.06)",  border: "rgba(0,255,136,0.18)"  },
+    "NEUTRAL":  { color: "#ffd700", bg: "rgba(255,215,0,0.06)",  border: "rgba(255,215,0,0.18)"  },
+    "RISK OFF": { color: "#ff4466", bg: "rgba(255,68,102,0.06)", border: "rgba(255,68,102,0.18)" },
+  };
+  const RISK_COLORS  = { LOW: "#00ff88", MEDIUM: "#ffd700", HIGH: "#ff4466" };
+  const cfg          = REGIME_COLORS[regime] ?? REGIME_COLORS["NEUTRAL"];
+  const riskColor    = RISK_COLORS[riskLevel];
+  const btcUp        = (btc?.change ?? 0) >= 0;
+  const btcColor     = btcUp ? "#00ff88" : "#ff4466";
+  const setupColor   = setup.type === "LONG" ? "#00ff88" : setup.type === "SHORT" ? "#ff4466" : "#444";
 
   return (
-    <div style={{
-      background: cfg.bg, border: `1px solid ${cfg.border}`,
-      borderRadius: 12, padding: "14px 16px", marginBottom: 4,
-    }}>
-      {/* Row 1 — Regime (largest) */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-        <div>
-          <div style={{ fontSize: 9, color: "#555", letterSpacing: 2, fontFamily: "'Space Mono', monospace", marginBottom: 3 }}>MARKET REGIME</div>
-          <div className="mobile-regime-label" style={{ fontSize: 26, fontWeight: 900, color: cfg.color, fontFamily: "'Space Mono', monospace", letterSpacing: 1, lineHeight: 1 }}>
-            {regime}
-          </div>
-        </div>
-        {/* VIX pill */}
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 3 }}>VIX</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: (vix?.price ?? 0) > 25 ? "#ff4466" : (vix?.price ?? 0) > 18 ? "#ffd700" : "#00ff88", fontFamily: "'Space Mono', monospace" }}>
-            {vix?.price?.toFixed(1) ?? "—"}
-          </div>
-        </div>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
 
-      {/* Row 2 — Leverage Risk + Setup side by side */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <div style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "8px 10px" }}>
-          <div style={{ fontSize: 8, color: "#555", letterSpacing: 1.5, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>LEV. RISK</div>
-          <div className="mobile-risk-label" style={{ fontSize: 18, fontWeight: 800, color: riskColor, fontFamily: "'Space Mono', monospace" }}>
-            {riskLevel}
-          </div>
-          <div style={{ marginTop: 6, height: 4, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden" }}>
-            <div style={{
-              height: "100%", width: `${riskScore}%`,
-              background: riskColor, borderRadius: 2,
-              transition: "width 1s ease",
-            }} />
-          </div>
-        </div>
-
-        <div style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "8px 10px" }}>
-          <div style={{ fontSize: 8, color: "#555", letterSpacing: 1.5, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>SETUP</div>
-          {setup.type ? (
-            <>
-              <div style={{ fontSize: 18, fontWeight: 800, color: setupColor, fontFamily: "'Space Mono', monospace" }}>
-                {setup.type === "LONG" ? "▲ LONG" : "▼ SHORT"}
-              </div>
-              <div style={{ fontSize: 9, color: setupColor, fontFamily: "'Space Mono', monospace", marginTop: 2 }}>
-                {setup.confidence} CONF
-              </div>
-            </>
-          ) : (
-            <div style={{ fontSize: 13, color: "#444", fontFamily: "'Space Mono', monospace", marginTop: 4 }}>
-              NO SETUP
+      {/* ── BLOCK 1: Primary signal row ─────────────────────────── */}
+      <div style={{
+        background: cfg.bg, border: `1px solid ${cfg.border}`,
+        borderRadius: 14, padding: "16px 16px 14px",
+      }}>
+        {/* Row 1: Regime + BTC */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 8, color: "#555", letterSpacing: 2, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>REGIME</div>
+            <div style={{ fontSize: 28, fontWeight: 900, color: cfg.color, fontFamily: "'Space Mono', monospace", lineHeight: 1 }}>
+              {regime}
             </div>
-          )}
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 8, color: "#555", letterSpacing: 2, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>BTC 24H</div>
+            <div style={{ fontSize: 28, fontWeight: 900, color: btcColor, fontFamily: "'Space Mono', monospace", lineHeight: 1 }}>
+              {btcUp ? "▲" : "▼"} {Math.abs(btc?.change ?? 0).toFixed(1)}%
+            </div>
+          </div>
+        </div>
+
+        {/* Row 2: 3 metric pills */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+          {/* VIX */}
+          <div style={{ background: "rgba(0,0,0,0.25)", borderRadius: 8, padding: "8px 8px 6px", textAlign: "center" }}>
+            <div style={{ fontSize: 7, color: "#444", letterSpacing: 1, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>VIX</div>
+            <div style={{ fontSize: 20, fontWeight: 800, fontFamily: "'Space Mono', monospace",
+              color: (vix?.price ?? 0) > 25 ? "#ff4466" : (vix?.price ?? 0) > 18 ? "#ffd700" : "#00ff88" }}>
+              {vix?.price?.toFixed(0) ?? "—"}
+            </div>
+          </div>
+          {/* Leverage Risk */}
+          <div style={{ background: "rgba(0,0,0,0.25)", borderRadius: 8, padding: "8px 8px 6px", textAlign: "center" }}>
+            <div style={{ fontSize: 7, color: "#444", letterSpacing: 1, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>LEV RISK</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: riskColor, fontFamily: "'Space Mono', monospace" }}>
+              {riskLevel}
+            </div>
+            <div style={{ marginTop: 4, height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${riskScore}%`, background: riskColor, transition: "width 1s ease" }} />
+            </div>
+          </div>
+          {/* Setup */}
+          <div style={{ background: "rgba(0,0,0,0.25)", borderRadius: 8, padding: "8px 8px 6px", textAlign: "center" }}>
+            <div style={{ fontSize: 7, color: "#444", letterSpacing: 1, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>SETUP</div>
+            <div style={{ fontSize: setup.type ? 16 : 13, fontWeight: 800, color: setupColor, fontFamily: "'Space Mono', monospace" }}>
+              {setup.type ? (setup.type === "LONG" ? "▲ LONG" : "▼ SHORT") : "NONE"}
+            </div>
+            {setup.type && (
+              <div style={{ fontSize: 8, color: setupColor, fontFamily: "'Space Mono', monospace", marginTop: 2 }}>
+                {setup.confidence}
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* ── BLOCK 2: Action Tag ──────────────────────────────────── */}
+      <div style={{
+        background: action.bg,
+        border: `1px solid ${action.border}`,
+        borderRadius: 12, padding: "14px 16px",
+        textAlign: "center",
+      }}>
+        <div style={{ fontSize: 7, color: "#555", letterSpacing: 2, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>RECOMMENDED ACTION</div>
+        <div style={{ fontSize: 22, fontWeight: 900, color: action.color, fontFamily: "'Space Mono', monospace", letterSpacing: 2 }}>
+          {action.tag}
+        </div>
+      </div>
+
+      {/* ── BLOCK 3: What Changed ────────────────────────────────── */}
+      {changes.length > 0 && (
+        <div style={{
+          background: "rgba(255,255,255,0.02)",
+          border: "1px solid rgba(255,255,255,0.07)",
+          borderRadius: 10, padding: "10px 12px",
+        }}>
+          <div style={{ fontSize: 8, color: "#444", letterSpacing: 2, fontFamily: "'Space Mono', monospace", marginBottom: 8 }}>WHAT CHANGED</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {changes.map((c, i) => (
+              <div key={c.id} style={{
+                display: "flex", alignItems: "center", gap: 8,
+                opacity: 1 - i * 0.12,
+              }}>
+                <span style={{ color: c.color, fontSize: 11, flexShrink: 0 }}>⚡</span>
+                <span style={{ fontSize: 12, color: c.color, fontFamily: "'Space Mono', monospace", fontWeight: i === 0 ? 700 : 400 }}>
+                  {c.text}
+                </span>
+                <span style={{ fontSize: 9, color: "#333", fontFamily: "'Space Mono', monospace", marginLeft: "auto" }}>
+                  {new Date(c.time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
     </div>
   );
 });
+
+// Keep the old name as an alias so the mobile layout reference still works
+const MobileCoreSignalCard = OneGlanceMode;
 
 const SentimentGauge = ({ assets }) => {
   const score = assets.reduce((acc, a) => {
@@ -3447,7 +3579,7 @@ export default function MarketMonitor() {
   const [journal, setJournal] = useState(() => loadJournal());
   const alertsFeedRef = useRef(null);
 
-  // Mobile detection + collapsible section state
+  // Mobile detection + collapsible section state (start closed for clean One Glance view)
   const isMobile = useIsMobile(768);
   const { open: sectionOpen, toggle: toggleSection } = useCollapsible(
     ["signals", "heatmap", "chart", "quicklinks"]
@@ -3910,27 +4042,23 @@ export default function MarketMonitor() {
           {/* ── MOBILE-FIRST LAYOUT ────────────────────────────── */}
           {isMobile ? (<>
 
-            {/* A) Core Signal Card — "above the fold" on mobile */}
+            {/* ONE GLANCE MODE — regime + BTC + risk + setup + action + what changed */}
             <MobileCoreSignalCard
               assets={assets}
               regime={currentRegime}
               lagSignals={lagSignals}
             />
 
-            {/* B) Regime card (collapsed detail) */}
-            <MarketRegimeCard assets={assets} onRegimeChange={setRiskMode} />
+            {/* Priority assets strip is handled by the left panel horizontal scroll above */}
 
-            {/* C) Setup Detector */}
-            <SetupDetectorPanel assets={assets} regime={currentRegime} lagSignals={lagSignals.map(s => s.signal)} />
-
-            {/* D) Quick Signals — collapsible */}
+            {/* Quick Signals — collapsible, collapsed by default on mobile */}
             <div>
               <div className="mobile-collapsible-toggle" onClick={() => toggleSection("signals")}>
                 <span>Quick Signals</span>
                 <span>{sectionOpen.signals ? "▲ HIDE" : "▼ SHOW"}</span>
               </div>
               {sectionOpen.signals && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
                   <LeverageRiskGauge assets={assets} />
                   <BtcLeadLagPanel assets={assets} signals={lagSignals} loading={leveragedLoading} />
                   <NewsReactionPanel assets={assets} />
@@ -3938,24 +4066,31 @@ export default function MarketMonitor() {
               )}
             </div>
 
-            {/* E) Heatmap — collapsible */}
+            {/* Heatmap — collapsible */}
             <div>
               <div className="mobile-collapsible-toggle" onClick={() => toggleSection("heatmap")}>
                 <span>Asset Heatmap</span>
                 <span>{sectionOpen.heatmap ? "▲ HIDE" : "▼ SHOW"}</span>
               </div>
-              {sectionOpen.heatmap && <Heatmap assets={assets} />}
+              {sectionOpen.heatmap && (
+                <div style={{ marginTop: 8 }}>
+                  <Heatmap assets={assets} />
+                </div>
+              )}
             </div>
 
-            {/* F) Sentiment + Aggregate — collapsible */}
+            {/* Full Detail — everything else, collapsed */}
             <div>
               <div className="mobile-collapsible-toggle" onClick={() => toggleSection("chart")}>
-                <span>Sentiment & Chart</span>
+                <span>Full Detail</span>
                 <span>{sectionOpen.chart ? "▲ HIDE" : "▼ SHOW"}</span>
               </div>
               {sectionOpen.chart && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <SentimentGauge assets={assets} /></div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
+                  <MarketRegimeCard assets={assets} onRegimeChange={setRiskMode} />
+                  <SetupDetectorPanel assets={assets} regime={currentRegime} lagSignals={lagSignals.map(s => s.signal)} />
+                  <SentimentGauge assets={assets} />
+                </div>
               )}
             </div>
 

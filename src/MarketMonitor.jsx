@@ -310,13 +310,14 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
     if (!res.ok) throw new Error(`/api/prices ${res.status}`);
     const json = await res.json();
 
-    // Handle both old shape { id: {...} } and new shape { fetchedAt, assets: { id: {...} } }
     const data = json.assets ?? json;
 
     Object.entries(data).forEach(([id, val]) => {
       if (val?.price) {
-        _priceCache[id] = val;
-        console.log(`[Price] ${id}: $${val.price} (${val.change >= 0 ? "+" : ""}${val.change}%) | src=${val.source ?? "?"} | ts=${val.timestamp ?? "?"}`);
+        // Backend now uses percentChange — map to change for UI compatibility
+        const change = val.percentChange ?? val.change ?? 0;
+        _priceCache[id] = { ...val, change };
+        console.log(`[Price] ${id}: $${val.price} (${change >= 0 ? "+" : ""}${change.toFixed(2)}%) | src=${val.source ?? "?"} | conf=${val.confidence ?? "?"} | cached=${val.cached ?? false}`);
       }
     });
   } catch (e) {
@@ -332,6 +333,8 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
     source:      _priceCache[meta.id]?.source      ?? "fallback",
     timestamp:   _priceCache[meta.id]?.timestamp   ?? null,
     status:      _priceCache[meta.id]?.status      ?? "valid",
+    confidence:  _priceCache[meta.id]?.confidence  ?? "low",
+    cached:      _priceCache[meta.id]?.cached      ?? false,
   }));
 };
 
@@ -880,6 +883,16 @@ const AssetCard = memo(({ asset, debugMode }) => {
   const isStale     = dataStatus === "stale";
   const isDataError = dataStatus === "error";
 
+  // Confidence — dims card and source label when low
+  const confidence    = asset.confidence ?? "high";
+  const isLowConf     = confidence === "low";
+  const isMediumConf  = confidence === "medium";
+
+  // Source label — short 2-3 char abbreviation shown bottom-left
+  const SOURCE_LABELS = { Finnhub: "FH", FMP: "FMP", Yahoo: "YH", Binance: "BN", fallback: "FB" };
+  const sourceLabel   = SOURCE_LABELS[asset.source] ?? asset.source?.slice(0, 3).toUpperCase() ?? "?";
+  const isCached      = asset.cached === true;
+
   // dollar change from sparkline start
   const sparkFirst = asset.sparkline?.[0]?.v ?? asset.price;
   const dollarChange = asset.price - sparkFirst;
@@ -908,7 +921,7 @@ const AssetCard = memo(({ asset, debugMode }) => {
       cursor: "pointer",
       position: "relative",
       overflow: "hidden",
-      opacity: isDataError ? 0.7 : 1,
+      opacity: isDataError ? 0.7 : isLowConf ? 0.6 : 1,
     }}>
       {/* colored left accent bar */}
       <div style={{
@@ -972,6 +985,40 @@ const AssetCard = memo(({ asset, debugMode }) => {
         </div>
       </div>
       <Sparkline data={asset.sparkline} change={asset.change} />
+
+      {/* Source label + cache indicator — always visible, small */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          {/* Source badge */}
+          <span style={{
+            fontSize: 8, padding: "1px 4px", borderRadius: 2,
+            background: isLowConf   ? "rgba(255,68,102,0.1)"
+                       : isMediumConf ? "rgba(255,215,0,0.08)"
+                       : "rgba(0,255,136,0.08)",
+            color: isLowConf   ? "#ff4466"
+                 : isMediumConf ? "#ffd700"
+                 : "#00ff88",
+            fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+            border: `1px solid ${isLowConf ? "rgba(255,68,102,0.2)" : isMediumConf ? "rgba(255,215,0,0.15)" : "rgba(0,255,136,0.15)"}`,
+          }}>{sourceLabel}</span>
+          {/* Cache indicator — only show when serving cached data */}
+          {isCached && (
+            <span style={{
+              fontSize: 8, padding: "1px 4px", borderRadius: 2,
+              background: "rgba(255,255,255,0.04)", color: "#444",
+              fontFamily: "'Space Mono', monospace",
+              border: "1px solid rgba(255,255,255,0.07)",
+            }}>CACHED</span>
+          )}
+        </div>
+        {/* Confidence dot */}
+        <div style={{
+          width: 4, height: 4, borderRadius: "50%",
+          background: isLowConf ? "#ff4466" : isMediumConf ? "#ffd700" : "#00ff88",
+          opacity: 0.6,
+          flexShrink: 0,
+        }} />
+      </div>
       {debugMode && (
         <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid rgba(0,170,255,0.15)" }}>
           <div style={{ fontSize: 9, color: "#00aaff", fontFamily: "'Space Mono', monospace", lineHeight: 1.6 }}>
@@ -980,6 +1027,12 @@ const AssetCard = memo(({ asset, debugMode }) => {
             <span style={{ color: dataStatus === "valid" ? "#00ff88" : dataStatus === "stale" ? "#ffd700" : "#ff4466" }}>
               {dataStatus.toUpperCase()}
             </span><br />
+            <span style={{ color: "#555" }}>conf:</span>{" "}
+            <span style={{ color: isLowConf ? "#ff4466" : isMediumConf ? "#ffd700" : "#00ff88" }}>
+              {confidence}
+            </span> &nbsp;
+            <span style={{ color: "#555" }}>cached:</span>{" "}
+            <span style={{ color: isCached ? "#ffd700" : "#555" }}>{isCached ? "yes" : "no"}</span><br />
             <span style={{ color: "#555" }}>ts:</span> {asset.timestamp ? new Date(asset.timestamp).toLocaleTimeString() : "fallback"}
           </div>
         </div>

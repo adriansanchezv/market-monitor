@@ -228,25 +228,27 @@ const ALERT_SOUNDS = {
 // ASSET META + MOCK DATA
 // ─────────────────────────────────────────────
 const ASSET_META = [
-  { id: "VIX", label: "VIX",        category: "fear",      unit: "",  vol: 0.04  },
-  { id: "SPY", label: "S&P 500",    category: "equity",    unit: "$", vol: 0.008 },
-  { id: "QQQ", label: "Nasdaq",     category: "equity",    unit: "$", vol: 0.01  },
-  { id: "BTC", label: "Bitcoin",    category: "crypto",    unit: "$", vol: 0.025 },
-  { id: "ETH", label: "Ethereum",   category: "crypto",    unit: "$", vol: 0.03  },
-  { id: "WTI", label: "Crude Oil",  category: "commodity", unit: "$", vol: 0.015 },
-  { id: "DXY", label: "USD Index",  category: "currency",  unit: "",  vol: 0.005 },
-  { id: "TNX", label: "10Y Yield",  category: "bonds",     unit: "%", vol: 0.008 },
+  { id: "VIX",  label: "VIX",        category: "fear",      unit: "",  vol: 0.04  },
+  { id: "SPY",  label: "S&P 500",    category: "equity",    unit: "$", vol: 0.008 },
+  { id: "QQQ",  label: "Nasdaq",     category: "equity",    unit: "$", vol: 0.01  },
+  { id: "BTC",  label: "Bitcoin",    category: "crypto",    unit: "$", vol: 0.025 },
+  { id: "ETH",  label: "Ethereum",   category: "crypto",    unit: "$", vol: 0.03  },
+  { id: "WTI",  label: "Crude Oil",  category: "commodity", unit: "$", vol: 0.015 },
+  { id: "GOLD", label: "Gold",       category: "commodity", unit: "$", vol: 0.008 },
+  { id: "DXY",  label: "USD Index",  category: "currency",  unit: "",  vol: 0.005 },
+  { id: "TNX",  label: "10Y Yield",  category: "bonds",     unit: "%", vol: 0.008 },
 ];
 
 const MOCK_PRICES = {
-  VIX: { price: 17.04, change: 0.00  },
-  SPY: { price: 679.46, change: -0.07 },
-  QQQ: { price: 578.32, change: -0.12 },
-  BTC: { price: 84320.00, change: 0.00 },
-  ETH: { price: 1580.00, change: 0.00 },
-  WTI: { price: 96.57, change: -1.33  },
-  DXY: { price: 98.87, change: -0.15  },
-  TNX: { price: 4.34,  change: -0.09  },
+  VIX:  { price: 17.04,   change: 0.00  },
+  SPY:  { price: 679.46,  change: -0.07 },
+  QQQ:  { price: 578.32,  change: -0.12 },
+  BTC:  { price: 84320.00,change: 0.00  },
+  ETH:  { price: 1580.00, change: 0.00  },
+  WTI:  { price: 96.57,   change: -1.33 },
+  GOLD: { price: 3230.00, change: 0.16  },
+  DXY:  { price: 98.87,   change: -0.15 },
+  TNX:  { price: 4.34,    change: -0.09 },
 };
 
 const MOCK_NEWS = [
@@ -2487,11 +2489,11 @@ export default function MarketMonitor() {
           </div>
           {/* Grouped by category */}
           {[
-            { label: "Equities", ids: ["SPY", "QQQ"] },
-            { label: "Volatility", ids: ["VIX"] },
-            { label: "Crypto", ids: ["BTC", "ETH"] },
-            { label: "Commodities", ids: ["WTI"] },
-            { label: "Macro", ids: ["DXY", "TNX"] },
+            { label: "Equities",    ids: ["SPY", "QQQ"] },
+            { label: "Volatility",  ids: ["VIX"] },
+            { label: "Crypto",      ids: ["BTC", "ETH"] },
+            { label: "Commodities", ids: ["WTI", "GOLD"] },
+            { label: "Macro",       ids: ["DXY", "TNX"] },
           ].map(group => {
             const groupAssets = assets.filter(a => group.ids.includes(a.id));
             if (!groupAssets.length) return null;
@@ -2554,10 +2556,11 @@ export default function MarketMonitor() {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {[
-                  { label: "Equities", val: assets.find(a => a.id === "SPY")?.change ?? 0, max: 3 },
-                  { label: "Crypto",   val: ((assets.find(a => a.id === "BTC")?.change ?? 0) + (assets.find(a => a.id === "ETH")?.change ?? 0)) / 2, max: 6 },
+                  { label: "Equities",   val: assets.find(a => a.id === "SPY")?.change ?? 0, max: 3 },
+                  { label: "Crypto",     val: ((assets.find(a => a.id === "BTC")?.change ?? 0) + (assets.find(a => a.id === "ETH")?.change ?? 0)) / 2, max: 6 },
                   { label: "Volatility", val: -(assets.find(a => a.id === "VIX")?.change ?? 0), max: 5 },
-                  { label: "Oil",      val: assets.find(a => a.id === "WTI")?.change ?? 0, max: 3 },
+                  { label: "Oil",        val: assets.find(a => a.id === "WTI")?.change ?? 0, max: 3 },
+                  { label: "Gold",       val: assets.find(a => a.id === "GOLD")?.change ?? 0, max: 2 },
                 ].map(({ label, val, max }) => {
                   const clampedPct = Math.min(Math.abs(val) / max * 100, 100);
                   const barColor = val >= 0 ? "#00ff88" : "#ff4466";

@@ -60,6 +60,7 @@ const ASSET_TIER = {
   QQQ: TIERS.HIGH,
   VIX: TIERS.HIGH,
   WTI: TIERS.MEDIUM,
+  GOLD: TIERS.MEDIUM,  // Gold moves with macro — 30s is sufficient
   TNX: TIERS.LOW,
   DXY: TIERS.LOW,
 };
@@ -398,6 +399,11 @@ function getFetchChain(id) {
       { name: "FMP",     fn: () => fetchFromFMP("^VIX")            },
       { name: "Finnhub", fn: () => fetchFromFinnhub("CBOE:VIX")    },
     ],
+    GOLD: [
+      { name: "Finnhub", fn: () => fetchFromFinnhub("GC1!")        }, // Finnhub continuous futures
+      { name: "Yahoo",   fn: () => fetchFromYahoo("GC=F")          }, // Yahoo gold futures
+      { name: "FMP",     fn: () => fetchFromFMP("GCUSD")           }, // FMP spot gold
+    ],
   };
   return chains[id] ?? null;
 }
@@ -432,14 +438,15 @@ function computeSystemStatus(assets, ids) {
   return { status, errorCount, totalTracked, degradedAt: _systemLog.degradedAt };
 }
 const FALLBACK = {
-  BTC: { symbol:"BTC", price:84320,  change:0,     percentChange:0,     marketState:"REGULAR", prevClose:84320,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
-  ETH: { symbol:"ETH", price:1580,   change:0,     percentChange:0,     marketState:"REGULAR", prevClose:1580,   source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
-  VIX: { symbol:"VIX", price:17.04,  change:0,     percentChange:0,     marketState:"CLOSED",  prevClose:17.04,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
-  SPY: { symbol:"SPY", price:679.46, change:-0.30, percentChange:-0.07, marketState:"CLOSED",  prevClose:679.91, source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
-  QQQ: { symbol:"QQQ", price:578.32, change:-0.70, percentChange:-0.12, marketState:"CLOSED",  prevClose:578.50, source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
-  WTI: { symbol:"WTI", price:96.57,  change:-1.30, percentChange:-1.33, marketState:"CLOSED",  prevClose:97.87,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
-  TNX: { symbol:"TNX", price:4.34,   change:-0.04, percentChange:-0.09, marketState:"CLOSED",  prevClose:4.38,   source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
-  DXY: { symbol:"DXY", price:98.87,  change:-0.15, percentChange:-0.15, marketState:"CLOSED",  prevClose:99.02,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  BTC:  { symbol:"BTC",  price:84320,  change:0,     percentChange:0,     marketState:"REGULAR", prevClose:84320,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  ETH:  { symbol:"ETH",  price:1580,   change:0,     percentChange:0,     marketState:"REGULAR", prevClose:1580,   source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  VIX:  { symbol:"VIX",  price:17.04,  change:0,     percentChange:0,     marketState:"CLOSED",  prevClose:17.04,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  SPY:  { symbol:"SPY",  price:679.46, change:-0.30, percentChange:-0.07, marketState:"CLOSED",  prevClose:679.91, source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  QQQ:  { symbol:"QQQ",  price:578.32, change:-0.70, percentChange:-0.12, marketState:"CLOSED",  prevClose:578.50, source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  WTI:  { symbol:"WTI",  price:96.57,  change:-1.30, percentChange:-1.33, marketState:"CLOSED",  prevClose:97.87,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  TNX:  { symbol:"TNX",  price:4.34,   change:-0.04, percentChange:-0.09, marketState:"CLOSED",  prevClose:4.38,   source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  DXY:  { symbol:"DXY",  price:98.87,  change:-0.15, percentChange:-0.15, marketState:"CLOSED",  prevClose:99.02,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  GOLD: { symbol:"GOLD", price:3230,   change:5.00,  percentChange:0.16,  marketState:"CLOSED",  prevClose:3225,   source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -457,7 +464,7 @@ export default async function handler(req, res) {
 
   console.log(`[/api/prices] ${fetchedAt} | market=${marketOpen ? "OPEN" : "CLOSED"} | finnhub=${rateLimits.finnhub.calls}/${rateLimits.finnhub.limit} | fmp=${rateLimits.fmp.calls}/${rateLimits.fmp.limit}`);
 
-  const ids    = ["BTC", "ETH", "SPY", "QQQ", "WTI", "TNX", "DXY", "VIX"];
+  const ids    = ["BTC", "ETH", "SPY", "QQQ", "WTI", "GOLD", "TNX", "DXY", "VIX"];
   const assets = {};
 
   // ── Step 1: Serve from cache where fresh ─────────────────────────

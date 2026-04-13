@@ -2399,6 +2399,271 @@ const SetupDetectorPanel = memo(({ assets, regime, lagSignals }) => {
   );
 });
 
+// ─────────────────────────────────────────────
+// STOCK MOMENTUM PANEL
+// ─────────────────────────────────────────────
+
+/**
+ * analyzeMomentum({ price, ma20, ma50, dailyChange, volumeRatio })
+ *
+ * Inputs:
+ *   price        : current price
+ *   ma20         : 20-day simple moving average
+ *   ma50         : 50-day simple moving average
+ *   dailyChange  : today's % change
+ *   volumeRatio  : today's volume / 20-day avg volume (>1.5 = spike)
+ *
+ * Returns: { trend, strength, signal }
+ */
+function analyzeMomentum({ price, ma20, ma50, dailyChange, volumeRatio = 1 }) {
+  const aboveMA20 = price > ma20;
+  const aboveMA50 = price > ma50;
+  const ma20AboveMA50 = ma20 > ma50;   // golden/death cross proxy
+  const positiveDay = dailyChange > 0;
+  const volumeSpike = volumeRatio >= 1.5;
+
+  // ── Trend ─────────────────────────────────────────────────────────
+  let trend;
+  if (aboveMA20 && aboveMA50 && ma20AboveMA50) trend = "UP";
+  else if (!aboveMA20 && !aboveMA50 && !ma20AboveMA50) trend = "DOWN";
+  else trend = "SIDEWAYS";
+
+  // ── Strength ──────────────────────────────────────────────────────
+  const bullishSignals = [aboveMA20, aboveMA50, ma20AboveMA50, positiveDay].filter(Boolean).length;
+  let strength;
+  if (bullishSignals === 4) strength = "STRONG";
+  else if (bullishSignals === 0) strength = "STRONG";  // strongly bearish
+  else if (bullishSignals >= 3 || bullishSignals <= 1) strength = "MEDIUM";
+  else strength = "WEAK";
+
+  // ── Signal ────────────────────────────────────────────────────────
+  let signal;
+  if (trend === "UP" && volumeSpike && positiveDay) signal = "BREAKOUT";
+  else if (trend === "UP" || trend === "DOWN") signal = "TREND";
+  else signal = "WAIT";
+
+  return { trend, strength, signal };
+}
+
+// Stocks to track + their Yahoo tickers
+const MOMENTUM_STOCKS = [
+  { id: "SOFI", label: "SoFi",     desc: "Fintech / neo-bank" },
+  { id: "PLTR", label: "Palantir", desc: "AI data analytics"  },
+  { id: "ZETA", label: "Zeta",     desc: "Marketing AI"       },
+];
+
+// Fetches 3mo daily OHLCV from Yahoo via corsproxy, computes MA20/MA50
+const useStockMomentum = () => {
+  const [stocks, setStocks]   = useState({});
+  const [loading, setLoading] = useState(true);
+  const [lastFetch, setLastFetch] = useState(null);
+
+  useEffect(() => {
+    const fetchAll = async () => {
+      const results = {};
+
+      await Promise.all(MOMENTUM_STOCKS.map(async ({ id }) => {
+        try {
+          // 3 months of daily data — gives us 60+ candles for MA20/MA50
+          const url   = `https://query1.finance.yahoo.com/v8/finance/chart/${id}?interval=1d&range=3mo`;
+          const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+          const res   = await fetch(proxy, { cache: "no-store" });
+          if (!res.ok) throw new Error(`${res.status}`);
+
+          const data   = await res.json();
+          const result = data?.chart?.result?.[0];
+          const meta   = result?.meta;
+          const quotes = result?.indicators?.quote?.[0];
+          const closes = quotes?.close ?? [];
+          const volumes= quotes?.volume ?? [];
+
+          if (!meta || closes.length < 20) throw new Error("insufficient data");
+
+          const validCloses = closes.filter(c => c != null);
+          const price    = parseFloat((meta.regularMarketPrice ?? validCloses.at(-1)).toFixed(2));
+          const change   = parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2));
+
+          // Compute SMA
+          const sma = (arr, n) => {
+            const slice = arr.filter(v => v != null).slice(-n);
+            return slice.length < n ? null : parseFloat((slice.reduce((a, b) => a + b, 0) / n).toFixed(2));
+          };
+
+          const ma20 = sma(validCloses, 20);
+          const ma50 = sma(validCloses, 50);
+
+          // Volume ratio: today vs 20-day avg
+          const validVols   = volumes.filter(v => v != null);
+          const avgVol20    = validVols.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
+          const todayVol    = validVols.at(-1) ?? 0;
+          const volumeRatio = avgVol20 > 0 ? todayVol / avgVol20 : 1;
+
+          const prevClose   = parseFloat((meta.chartPreviousClose ?? price).toFixed(2));
+          const momentum    = (ma20 && ma50) ? analyzeMomentum({ price, ma20, ma50, dailyChange: change, volumeRatio }) : null;
+
+          results[id] = { price, change, prevClose, ma20, ma50, volumeRatio, momentum, marketState: meta.marketState ?? "CLOSED" };
+        } catch (e) {
+          console.warn(`[Momentum] ${id}: ${e.message}`);
+          results[id] = null;
+        }
+      }));
+
+      setStocks(results);
+      setLoading(false);
+      setLastFetch(new Date());
+    };
+
+    fetchAll();
+    const interval = setInterval(fetchAll, 5 * 60 * 1000); // refresh every 5 min
+    return () => clearInterval(interval);
+  }, []);
+
+  return { stocks, loading, lastFetch };
+};
+
+// ── Momentum color helpers ────────────────────────────────────────
+const MOMENTUM_COLORS = {
+  trend: {
+    UP:       "#00ff88",
+    DOWN:     "#ff4466",
+    SIDEWAYS: "#ffd700",
+  },
+  strength: {
+    STRONG: { UP: "#00ff88", DOWN: "#ff4466", SIDEWAYS: "#ffd700" },
+    MEDIUM: { UP: "#aaffcc", DOWN: "#ff8899", SIDEWAYS: "#ffd700" },
+    WEAK:   { UP: "#ffd700", DOWN: "#ffd700", SIDEWAYS: "#555"    },
+  },
+  signal: {
+    BREAKOUT: "#00ff88",
+    TREND:    "#aaa",
+    WAIT:     "#555",
+  },
+};
+
+const StockMomentumPanel = memo(() => {
+  const { stocks, loading, lastFetch } = useStockMomentum();
+
+  const fmt$ = (n) => n != null ? `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—";
+  const fmtPct = (n) => n != null ? `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` : "—";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
+          Stock Momentum
+        </span>
+        <span style={{ fontSize: 9, color: "#333", fontFamily: "'Space Mono', monospace" }}>
+          {loading ? "Loading..." : lastFetch ? `UPD ${lastFetch.toLocaleTimeString("en-US", { hour12: false })}` : ""}
+        </span>
+      </div>
+
+      {/* Column headers */}
+      <div style={{
+        display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr",
+        gap: 8, padding: "0 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 6,
+      }}>
+        {["Stock", "Price", "Chg", "Trend", "Strength", "Signal"].map(h => (
+          <span key={h} style={{ fontSize: 9, color: "#444", letterSpacing: 1, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>{h}</span>
+        ))}
+      </div>
+
+      {/* Stock rows */}
+      {MOMENTUM_STOCKS.map(({ id, label, desc }) => {
+        const d = stocks[id];
+        const m = d?.momentum;
+        const isClosed = d?.marketState === "CLOSED";
+        const trendColor  = m ? MOMENTUM_COLORS.trend[m.trend]    : "#444";
+        const sigColor    = m ? MOMENTUM_COLORS.signal[m.signal]  : "#444";
+        const chgColor    = d?.change >= 0 ? "#00ff88" : "#ff4466";
+
+        return (
+          <div key={id} style={{
+            display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr",
+            gap: 8, padding: "10px 10px",
+            background: !m ? "rgba(255,255,255,0.01)"
+              : m.trend === "UP"   ? "rgba(0,255,136,0.02)"
+              : m.trend === "DOWN" ? "rgba(255,68,102,0.02)"
+              : "rgba(255,215,0,0.02)",
+            border: `1px solid ${!m ? "rgba(255,255,255,0.05)" : m.trend === "UP" ? "rgba(0,255,136,0.08)" : m.trend === "DOWN" ? "rgba(255,68,102,0.08)" : "rgba(255,215,0,0.06)"}`,
+            borderRadius: 6, alignItems: "center",
+            borderLeft: `3px solid ${trendColor}`,
+            opacity: loading ? 0.5 : 1,
+            transition: "opacity 0.3s",
+          }}>
+            {/* Stock name */}
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{label}</div>
+              <div style={{ fontSize: 9, color: "#444", marginTop: 1 }}>{desc}</div>
+            </div>
+
+            {/* Price */}
+            <div style={{ fontSize: 11, color: isClosed ? "#666" : "#ccc", fontFamily: "'Space Mono', monospace" }}>
+              {loading ? "..." : fmt$(d?.price)}
+            </div>
+
+            {/* Daily change */}
+            <div style={{ fontSize: 11, fontWeight: 700, color: loading || !d ? "#444" : chgColor, fontFamily: "'Space Mono', monospace" }}>
+              {loading ? "..." : fmtPct(d?.change)}
+            </div>
+
+            {/* Trend */}
+            <div>
+              {m ? (
+                <span style={{
+                  fontSize: 10, fontWeight: 700, color: trendColor,
+                  fontFamily: "'Space Mono', monospace",
+                }}>
+                  {m.trend === "UP" ? "▲ UP" : m.trend === "DOWN" ? "▼ DOWN" : "— SIDE"}
+                </span>
+              ) : (
+                <span style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace" }}>—</span>
+              )}
+            </div>
+
+            {/* Strength */}
+            <div>
+              {m ? (
+                <span style={{
+                  fontSize: 9, padding: "2px 5px", borderRadius: 2,
+                  background: `${trendColor}18`, color: trendColor,
+                  fontFamily: "'Space Mono', monospace",
+                  border: `1px solid ${trendColor}33`,
+                }}>{m.strength}</span>
+              ) : (
+                <span style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace" }}>—</span>
+              )}
+            </div>
+
+            {/* Signal */}
+            <div>
+              {m ? (
+                <span style={{
+                  fontSize: 9, padding: "2px 5px", borderRadius: 2,
+                  background: m.signal === "BREAKOUT" ? "rgba(0,255,136,0.12)" : "rgba(255,255,255,0.04)",
+                  color: sigColor,
+                  fontFamily: "'Space Mono', monospace",
+                  border: `1px solid ${sigColor}44`,
+                  fontWeight: m.signal === "BREAKOUT" ? 700 : 400,
+                }}>{m.signal}</span>
+              ) : (
+                <span style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace" }}>—</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* MA reference */}
+      <div style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "'Space Mono', monospace", padding: "2px 4px" }}>
+        MA20 / MA50 computed from 3mo daily closes · Refreshes every 5 min
+      </div>
+
+    </div>
+  );
+});
+
 const BDC_DATA = [
   { ticker: "ARCC",   name: "Ares Capital",     price: 21.34, change: 0.42,  nav: 19.77, yield: 9.8,  nonAccrual: 1.2, manager: "Ares" },
   { ticker: "OBDC",   name: "Blue Owl Capital",  price: 15.62, change: -0.18, nav: 15.41, yield: 10.4, nonAccrual: 0.8, manager: "Blue Owl" },
@@ -3011,6 +3276,7 @@ export default function MarketMonitor() {
           <div style={{ display: "flex", gap: 4, borderBottom: "1px solid rgba(255,255,255,0.06)", marginBottom: 4 }}>
             {[
               { id: "market",    label: "Markets" },
+              { id: "stocks",    label: "Stocks" },
               { id: "credit",    label: "Private Credit" },
               { id: "portfolio", label: "Portfolio" },
             ].map(t => (
@@ -3031,6 +3297,9 @@ export default function MarketMonitor() {
 
           {/* PRIVATE CREDIT TAB */}
           {centerTab === "credit" && <PrivateCreditPanel />}
+
+          {/* STOCKS TAB */}
+          {centerTab === "stocks" && <StockMomentumPanel />}
 
           {/* PORTFOLIO TAB */}
           {centerTab === "portfolio" && <PortfolioPanel assets={assets} />}

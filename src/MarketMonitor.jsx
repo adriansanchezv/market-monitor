@@ -2081,7 +2081,185 @@ const LeverageRiskGauge = memo(({ assets }) => {
   );
 });
 
-const BDC_DATA = [
+// ─────────────────────────────────────────────
+// BTC LEAD / LAG SIGNAL SYSTEM
+// ─────────────────────────────────────────────
+
+/**
+ * detectLeadLag(btcChange, assetChange)
+ *
+ * Detects when BTC is leading and a correlated asset hasn't moved yet.
+ * This signals a potential catch-up move in the lagging asset.
+ *
+ * Returns: { status, strength }
+ */
+function detectLeadLag(btcChange, assetChange) {
+  const btcUp    = btcChange > 1;
+  const btcDown  = btcChange < -1;
+  const assetLow = assetChange < 0.5;
+  const assetHigh = assetChange > -0.5;
+
+  let status;
+  if (btcUp && assetLow)   status = "LAGGING_BULLISH";  // BTC ripping, asset hasn't followed
+  else if (btcDown && assetHigh) status = "LAGGING_BEARISH"; // BTC dumping, asset still elevated
+  else                     status = "IN_SYNC";
+
+  if (status === "IN_SYNC") return { status, strength: null };
+
+  // Strength = how wide the gap is
+  const gap = Math.abs(btcChange - assetChange);
+  const strength = gap > 6 ? "STRONG" : gap > 3 ? "MODERATE" : "WEAK";
+
+  return { status, strength };
+}
+
+// Tracked leveraged assets — fetched client-side via Yahoo (no backend changes)
+const LEVERAGED_ASSETS = [
+  { id: "BMNR", label: "BitMine",   desc: "Bitcoin miner"          },
+  { id: "BMNU", label: "BMNU 2x",   desc: "2x Long BMNR"           },
+  { id: "BMNG", label: "BMNG 2x",   desc: "Leverage Shares 2x BMNR"},
+];
+
+// Fetches leveraged asset prices client-side every 60s (slow — they move with BTC)
+const useLeveragedAssets = () => {
+  const [prices, setPrices] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchAll = async () => {
+      const results = {};
+      await Promise.all(
+        LEVERAGED_ASSETS.map(async ({ id }) => {
+          try {
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${id}?interval=1d&range=2d`;
+            const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+            const res = await fetch(proxy, { cache: "no-store" });
+            if (!res.ok) throw new Error(`${res.status}`);
+            const data = await res.json();
+            const meta = data?.chart?.result?.[0]?.meta;
+            if (!meta?.regularMarketPrice) throw new Error("no price");
+            results[id] = {
+              price:       parseFloat((meta.regularMarketPrice).toFixed(2)),
+              change:      parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2)),
+              marketState: meta.marketState ?? "CLOSED",
+            };
+          } catch (e) {
+            results[id] = null;
+          }
+        })
+      );
+      setPrices(results);
+      setLoading(false);
+    };
+
+    fetchAll();
+    const interval = setInterval(fetchAll, 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return { prices, loading };
+};
+
+const LAG_CONFIG = {
+  LAGGING_BULLISH: { color: "#00ff88", bg: "rgba(0,255,136,0.1)",  border: "rgba(0,255,136,0.25)", label: "LAG ↑" },
+  LAGGING_BEARISH: { color: "#ff4466", bg: "rgba(255,68,102,0.1)", border: "rgba(255,68,102,0.25)", label: "LAG ↓" },
+  IN_SYNC:         { color: "#444",    bg: "transparent",           border: "transparent",           label: null    },
+};
+
+const BtcLeadLagPanel = memo(({ assets }) => {
+  const { prices, loading } = useLeveragedAssets();
+  const btc = assets.find(a => a.id === "BTC");
+  const btcChange = btc?.change ?? 0;
+
+  // Summary: any lagging signals?
+  const signals = LEVERAGED_ASSETS.map(a => {
+    const p = prices[a.id];
+    if (!p) return { ...a, change: null, signal: { status: "IN_SYNC", strength: null } };
+    return { ...a, price: p.price, change: p.change, signal: detectLeadLag(btcChange, p.change) };
+  });
+  const lagCount = signals.filter(s => s.signal.status !== "IN_SYNC").length;
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)",
+      border: "1px solid rgba(255,255,255,0.07)",
+      borderRadius: 8, padding: "12px 14px",
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div>
+          <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
+            BTC Lead Signal
+          </span>
+          {lagCount > 0 && (
+            <span style={{
+              marginLeft: 8, fontSize: 9, padding: "1px 6px", borderRadius: 2,
+              background: "rgba(0,255,136,0.1)", color: "#00ff88",
+              fontFamily: "'Space Mono', monospace", border: "1px solid rgba(0,255,136,0.2)",
+            }}>LAG DETECTED</span>
+          )}
+        </div>
+        <span style={{ fontSize: 10, color: "#555", fontFamily: "'Space Mono', monospace" }}>
+          BTC {btcChange >= 0 ? "+" : ""}{btcChange.toFixed(2)}%
+        </span>
+      </div>
+
+      {/* Asset rows */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {signals.map(({ id, label, desc, price, change, signal }) => {
+          const cfg = LAG_CONFIG[signal.status];
+          const hasData = change !== null;
+          return (
+            <div key={id} style={{
+              display: "grid", gridTemplateColumns: "1fr auto auto auto",
+              alignItems: "center", gap: 8,
+              padding: "6px 8px", borderRadius: 5,
+              background: signal.status !== "IN_SYNC" ? cfg.bg : "rgba(255,255,255,0.02)",
+              border: `1px solid ${signal.status !== "IN_SYNC" ? cfg.border : "rgba(255,255,255,0.05)"}`,
+              transition: "background 0.4s ease",
+            }}>
+              {/* Name */}
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#ccc", fontFamily: "'Space Mono', monospace" }}>{label}</div>
+                <div style={{ fontSize: 9, color: "#444" }}>{desc}</div>
+              </div>
+              {/* Price */}
+              <div style={{ fontSize: 11, color: hasData ? "#888" : "#333", fontFamily: "'Space Mono', monospace", textAlign: "right" }}>
+                {loading ? "..." : hasData ? `$${price?.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+              </div>
+              {/* Change */}
+              <div style={{
+                fontSize: 11, fontFamily: "'Space Mono', monospace", textAlign: "right",
+                color: !hasData ? "#333" : change >= 0 ? "#00ff88" : "#ff4466",
+              }}>
+                {loading ? "..." : hasData ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : "—"}
+              </div>
+              {/* Lag badge */}
+              <div style={{ minWidth: 48, textAlign: "right" }}>
+                {cfg.label && signal.strength && (
+                  <span style={{
+                    fontSize: 8, padding: "2px 5px", borderRadius: 2,
+                    background: cfg.bg, color: cfg.color,
+                    fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+                    border: `1px solid ${cfg.border}`,
+                    whiteSpace: "nowrap",
+                  }} title={`${signal.strength} lag vs BTC`}>
+                    {cfg.label} {signal.strength === "STRONG" ? "●●●" : signal.strength === "MODERATE" ? "●●" : "●"}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Footer note */}
+      <div style={{ marginTop: 8, fontSize: 9, color: "#333", fontFamily: "'Space Mono', monospace" }}>
+        Lag = asset hasn't followed BTC move yet · Updates every 60s
+      </div>
+    </div>
+  );
+});
   { ticker: "ARCC",   name: "Ares Capital",     price: 21.34, change: 0.42,  nav: 19.77, yield: 9.8,  nonAccrual: 1.2, manager: "Ares" },
   { ticker: "OBDC",   name: "Blue Owl Capital",  price: 15.62, change: -0.18, nav: 15.41, yield: 10.4, nonAccrual: 0.8, manager: "Blue Owl" },
   { ticker: "FSKKR",  name: "FS KKR Capital",    price: 19.88, change: -0.61, nav: 23.12, yield: 13.1, nonAccrual: 2.1, manager: "KKR" },
@@ -2714,8 +2892,11 @@ export default function MarketMonitor() {
           {/* Market Regime Engine — replaces old summary banner */}
           <MarketRegimeCard assets={assets} onRegimeChange={setRiskMode} />
 
-          {/* Leverage Risk Gauge */}
-          <LeverageRiskGauge assets={assets} />
+          {/* Leverage Risk + BTC Lead Lag — side by side */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <LeverageRiskGauge assets={assets} />
+            <BtcLeadLagPanel assets={assets} />
+          </div>
 
           {/* Sentiment + Aggregate Signal */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>

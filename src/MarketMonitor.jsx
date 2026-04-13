@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, memo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import { LineChart, Line, ResponsiveContainer, Tooltip, AreaChart, Area } from "recharts";
 
 // ─────────────────────────────────────────────
@@ -1183,6 +1183,7 @@ const AlertItem = memo(({ alert }) => {
 const NotificationToast = ({ notification }) => {
   const colors = { critical: "#ff0044", danger: "#ff4466", warning: "#ffd700", info: "#00aaff" };
   const color = colors[notification.level] || "#888";
+  const rgba = color === "#ff0044" ? "255,0,68" : color === "#ff4466" ? "255,68,102" : color === "#ffd700" ? "255,215,0" : "0,170,255";
   return (
     <div style={{
       background: "#13131a", border: `1px solid ${color}`,
@@ -1190,8 +1191,18 @@ const NotificationToast = ({ notification }) => {
       boxShadow: `0 4px 24px rgba(0,0,0,0.6), 0 0 20px ${color}22`,
       animation: "slideIn 0.3s ease",
     }}>
-      <div style={{ fontSize: 11, color, fontWeight: 700, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>
-        {notification.name ? `${notification.name.toUpperCase()}` : `ALERT — ${notification.level.toUpperCase()}`}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        <span style={{ fontSize: 11, color, fontWeight: 700, fontFamily: "'Space Mono', monospace" }}>
+          {notification.name ? notification.name.toUpperCase() : `ALERT — ${notification.level.toUpperCase()}`}
+        </span>
+        {notification.isMulti && (
+          <span style={{
+            fontSize: 8, padding: "1px 5px", borderRadius: 2,
+            background: `rgba(${rgba},0.15)`, color,
+            fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+            border: `1px solid ${color}44`,
+          }}>MULTI</span>
+        )}
       </div>
       <div style={{ fontSize: 12, color: "#d4d4d4", marginBottom: notification.triggers?.length ? 8 : 0 }}>
         {notification.msg}
@@ -1201,7 +1212,7 @@ const NotificationToast = ({ notification }) => {
           {notification.triggers.map((t, i) => (
             <span key={i} style={{
               fontSize: 9, padding: "2px 6px", borderRadius: 3,
-              background: `rgba(${color === "#ff0044" ? "255,0,68" : color === "#ff4466" ? "255,68,102" : color === "#ffd700" ? "255,215,0" : "0,170,255"},0.15)`,
+              background: `rgba(${rgba},0.15)`,
               color, border: `1px solid ${color}44`,
               fontFamily: "'Space Mono', monospace",
             }}>{t}</span>

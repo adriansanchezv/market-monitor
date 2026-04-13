@@ -1,24 +1,58 @@
 // api/prices.js — Vercel Serverless Function
-// Smart polling + server-side cache + rate limit protection
-// Architecture: cache-first → Finnhub (primary) → FMP (fallback) → Yahoo → Binance (crypto)
+// Data quality + source prioritization system
+// Architecture: cache-first → scored source chain → confidence rating → fallback
 
 // ─── Environment ──────────────────────────────────────────────────
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY || "";
 const FMP_KEY     = process.env.FMP_API_KEY     || "";
 
 // ─────────────────────────────────────────────────────────────────
-// POLLING TIERS
-// Defines how fresh each asset's cache must be before re-fetching.
-// Frontend can call /api/prices as often as it wants — server
-// returns cached data if still fresh, only hits upstream APIs when stale.
+// SOURCE REGISTRY
+// Defines priority score, reliability, and per-source validation rules.
+// Lower score = higher priority = tried first.
 // ─────────────────────────────────────────────────────────────────
-const TIERS = {
-  HIGH:   { ttl:  8 * 1000, label: "HIGH"   },  // 8s  — SPY, QQQ, BTC, ETH, VIX
-  MEDIUM: { ttl: 30 * 1000, label: "MEDIUM" },  // 30s — WTI
-  LOW:    { ttl: 60 * 1000, label: "LOW"    },  // 60s — TNX, DXY (slow-moving macro)
+const SOURCES = {
+  Binance: {
+    priority:      1,
+    reliability:   "high",   // Near real-time, no quota concerns
+    maxAgeMs:      10 * 1000, // Reject if data > 10s old (crypto moves fast)
+    maxDeviationPct: 12,      // Crypto is volatile — allow 12% swings
+  },
+  Finnhub: {
+    priority:      1,         // Tied with Binance for equities
+    reliability:   "high",
+    maxAgeMs:      2 * 60 * 1000, // 2 min max age
+    maxDeviationPct: 15,      // Abnormal move threshold per spec
+  },
+  FMP: {
+    priority:      2,
+    reliability:   "medium",  // Good data, but 250/day quota
+    maxAgeMs:      5 * 60 * 1000, // Slightly more lenient — updates less often
+    maxDeviationPct: 15,
+  },
+  Yahoo: {
+    priority:      3,
+    reliability:   "medium",  // Free, no quota, but can cache stale data
+    maxAgeMs:      5 * 60 * 1000,
+    maxDeviationPct: 15,
+  },
+  fallback: {
+    priority:      99,
+    reliability:   "low",
+    maxAgeMs:      Infinity,
+    maxDeviationPct: Infinity,
+  },
 };
 
-// Asset → tier assignment
+// ─────────────────────────────────────────────────────────────────
+// POLLING TIERS
+// ─────────────────────────────────────────────────────────────────
+const TIERS = {
+  HIGH:   { ttl:  8 * 1000, label: "HIGH"   },
+  MEDIUM: { ttl: 30 * 1000, label: "MEDIUM" },
+  LOW:    { ttl: 60 * 1000, label: "LOW"    },
+};
+
 const ASSET_TIER = {
   BTC: TIERS.HIGH,
   ETH: TIERS.HIGH,
@@ -31,19 +65,15 @@ const ASSET_TIER = {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// SERVER-SIDE CACHE
-// Module-level — persists across warm Vercel invocations
-// Shape: { [id]: { data: {...}, fetchedAt: ms, tier: TIER } }
+// SERVER-SIDE CACHE + LAST-VALID
 // ─────────────────────────────────────────────────────────────────
-const _cache     = {};   // live cache
-const _lastValid = {};   // last-known-good (survives bad fetches)
+const _cache     = {};
+const _lastValid = {};
 
 function isCacheFresh(id) {
   const entry = _cache[id];
   if (!entry) return false;
-  const tier  = ASSET_TIER[id] ?? TIERS.MEDIUM;
-  const age   = Date.now() - entry.fetchedAt;
-  return age < tier.ttl;
+  return Date.now() - entry.fetchedAt < (ASSET_TIER[id] ?? TIERS.MEDIUM).ttl;
 }
 
 function setCacheEntry(id, data) {
@@ -55,64 +85,51 @@ function getCacheEntry(id) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// RATE LIMIT TRACKER
-// Tracks Finnhub calls in the last 60 seconds (rolling window).
-// Finnhub free tier: 60 calls/min.
-// FMP free tier: 250 calls/day (~10/hr safe average).
-// If near limit → skip low-priority assets, return cached/fallback.
+// RATE LIMITER
 // ─────────────────────────────────────────────────────────────────
 const _rateLimiter = {
-  finnhub: { calls: [], limit: 55 },  // 55/min (5-call safety margin)
-  fmp:     { calls: [], limit: 8  },  // 8/hr converted to per-minute window
+  finnhub: { calls: [], limit: 55 },
+  fmp:     { calls: [], limit: 8  },
 };
 
 function recordCall(source) {
-  const now = Date.now();
+  const now     = Date.now();
   const tracker = _rateLimiter[source];
   if (!tracker) return;
-  // Keep only calls within the last 60 seconds
   tracker.calls = tracker.calls.filter(t => now - t < 60 * 1000);
   tracker.calls.push(now);
 }
 
 function isNearLimit(source) {
-  const now = Date.now();
+  const now     = Date.now();
   const tracker = _rateLimiter[source];
   if (!tracker) return false;
-  const recentCalls = tracker.calls.filter(t => now - t < 60 * 1000).length;
-  const nearLimit = recentCalls >= tracker.limit;
-  if (nearLimit) {
-    console.warn(`[RATE] ${source} near limit — ${recentCalls}/${tracker.limit} calls/min`);
+  const recent = tracker.calls.filter(t => now - t < 60 * 1000).length;
+  if (recent >= tracker.limit) {
+    console.warn(`[RATE] ${source} near limit — ${recent}/${tracker.limit} calls/min`);
+    return true;
   }
-  return nearLimit;
+  return false;
 }
 
 function getRateLimitStatus() {
   const now = Date.now();
   return {
-    finnhub: {
-      calls: _rateLimiter.finnhub.calls.filter(t => now - t < 60 * 1000).length,
-      limit: _rateLimiter.finnhub.limit,
-      nearLimit: isNearLimit("finnhub"),
-    },
-    fmp: {
-      calls: _rateLimiter.fmp.calls.filter(t => now - t < 60 * 1000).length,
-      limit: _rateLimiter.fmp.limit,
-      nearLimit: isNearLimit("fmp"),
-    },
+    finnhub: { calls: _rateLimiter.finnhub.calls.filter(t => now - t < 60 * 1000).length, limit: _rateLimiter.finnhub.limit },
+    fmp:     { calls: _rateLimiter.fmp.calls.filter(t => now - t < 60 * 1000).length,     limit: _rateLimiter.fmp.limit     },
   };
 }
 
-// ─── Market hours helper ──────────────────────────────────────────
+// ─── Market hours ─────────────────────────────────────────────────
 function isMarketOpen() {
-  const now = new Date();
-  const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const now  = new Date();
+  const et   = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
   const day  = et.getDay();
   const mins = et.getHours() * 60 + et.getMinutes();
   return day >= 1 && day <= 5 && mins >= 570 && mins < 960;
 }
 
-// ─── Standardized response shape ─────────────────────────────────
+// ─── Normalize to standard shape ─────────────────────────────────
 function normalize(symbol, raw, source) {
   return {
     symbol,
@@ -124,8 +141,80 @@ function normalize(symbol, raw, source) {
     source,
     timestamp:     new Date().toISOString(),
     status:        "valid",
+    confidence:    "high",
     cached:        false,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// SCORE + VALIDATE
+// Replaces simple validate() — now source-aware and returns
+// a structured result with confidence scoring.
+//
+// Returns: { valid: bool, confidence: "high"|"medium"|"low", reason: string }
+//
+// Validation rules (expanded per spec):
+//   1. price must be > 0 and not null
+//   2. timestamp must not exceed source's maxAgeMs
+//   3. percentChange must not exceed source's maxDeviationPct (15% for Finnhub/FMP)
+//   4. Cross-source sanity: if lastValid exists and deviation > threshold → reject
+// ─────────────────────────────────────────────────────────────────
+function scoreAndValidate(id, incoming) {
+  const sourceCfg = SOURCES[incoming.source] ?? SOURCES.fallback;
+  const { price, percentChange, timestamp, source } = incoming;
+
+  // Rule 1 — price must exist and be positive
+  if (!price || price <= 0 || isNaN(price)) {
+    console.warn(`[VALIDATE] ${id} [${source}]: REJECTED — null/zero price`);
+    return { valid: false, confidence: "low", reason: "null_price" };
+  }
+
+  // Rule 2 — timestamp must be fresh (source-specific max age)
+  if (timestamp && sourceCfg.maxAgeMs !== Infinity) {
+    const ageMs = Date.now() - new Date(timestamp).getTime();
+    if (ageMs > sourceCfg.maxAgeMs) {
+      console.warn(`[VALIDATE] ${id} [${source}]: STALE — age=${Math.round(ageMs/1000)}s > max=${sourceCfg.maxAgeMs/1000}s`);
+      return { valid: false, confidence: "low", reason: "stale_timestamp" };
+    }
+  }
+
+  // Rule 3 — abnormal single-period move (>15% per spec)
+  if (Math.abs(percentChange) > sourceCfg.maxDeviationPct) {
+    console.warn(`[VALIDATE] ${id} [${source}]: ABNORMAL MOVE — ${percentChange}% > ${sourceCfg.maxDeviationPct}% limit`);
+    return { valid: false, confidence: "low", reason: `abnormal_move_${percentChange.toFixed(1)}pct` };
+  }
+
+  // Rule 4 — cross-source sanity check vs last known good
+  const prev = _lastValid[id]?.price;
+  if (prev && prev > 0) {
+    const crossDeviation = Math.abs((price - prev) / prev) * 100;
+    if (crossDeviation > 10) {
+      console.warn(`[VALIDATE] ${id} [${source}]: CROSS-SOURCE DEVIATION — ${price} vs lastValid=${prev} (${crossDeviation.toFixed(1)}%)`);
+      return { valid: false, confidence: "low", reason: `cross_source_deviation_${crossDeviation.toFixed(1)}pct` };
+    }
+  }
+
+  // ── Confidence scoring ────────────────────────────────────────
+  // High:   primary source, fresh timestamp, small move
+  // Medium: fallback source used, or moderate move detected
+  // Low:    secondary fallback, large move, or near-limit conditions
+  let confidence = "high";
+
+  if (sourceCfg.priority > 1) {
+    // Not the primary source — medium confidence
+    confidence = "medium";
+  }
+
+  if (Math.abs(percentChange) > 5) {
+    // Large but valid move — flag as medium
+    confidence = confidence === "high" ? "medium" : "low";
+  }
+
+  if (sourceCfg.reliability === "medium") {
+    confidence = confidence === "high" ? "medium" : confidence;
+  }
+
+  return { valid: true, confidence, reason: "ok" };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -133,20 +222,20 @@ function normalize(symbol, raw, source) {
 // ─────────────────────────────────────────────────────────────────
 
 async function fetchFromFinnhub(symbol) {
-  if (!FINNHUB_KEY)       throw new Error("No Finnhub key");
+  if (!FINNHUB_KEY)           throw new Error("No Finnhub key");
   if (isNearLimit("finnhub")) throw new Error("Finnhub rate limit — throttling");
 
   const res = await fetch(
     `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${FINNHUB_KEY}`,
     { headers: { "Accept": "application/json" } }
   );
-  if (!res.ok) throw new Error(`Finnhub ${res.status} for ${symbol}`);
+  if (!res.ok) throw new Error(`Finnhub HTTP ${res.status} for ${symbol}`);
 
   const d = await res.json();
   if (!d.c || d.c === 0) throw new Error(`Finnhub zero price for ${symbol}`);
 
   recordCall("finnhub");
-  console.log(`[Finnhub] ${symbol} | price=${d.c} | ${d.dp}%`);
+  console.log(`[Finnhub] ${symbol} | price=${d.c} | ${d.dp}% | priority=1`);
 
   return {
     price:         parseFloat(d.c.toFixed(2)),
@@ -159,14 +248,14 @@ async function fetchFromFinnhub(symbol) {
 }
 
 async function fetchFromFMP(symbol) {
-  if (!FMP_KEY)         throw new Error("No FMP key");
-  if (isNearLimit("fmp")) throw new Error("FMP rate limit — throttling");
+  if (!FMP_KEY)             throw new Error("No FMP key");
+  if (isNearLimit("fmp"))   throw new Error("FMP rate limit — throttling");
 
   const res = await fetch(
     `https://financialmodelingprep.com/stable/quote?symbol=${encodeURIComponent(symbol)}&apikey=${FMP_KEY}`,
     { headers: { "Accept": "application/json" } }
   );
-  if (!res.ok) throw new Error(`FMP ${res.status} for ${symbol}`);
+  if (!res.ok) throw new Error(`FMP HTTP ${res.status} for ${symbol}`);
 
   const data = await res.json();
   if (!Array.isArray(data) || !data[0]) throw new Error(`FMP empty for ${symbol}`);
@@ -175,7 +264,7 @@ async function fetchFromFMP(symbol) {
   if (!d.price || d.price === 0) throw new Error(`FMP zero price for ${symbol}`);
 
   recordCall("fmp");
-  console.log(`[FMP] ${symbol} | price=${d.price} | ${d.changePercentage}%`);
+  console.log(`[FMP] ${symbol} | price=${d.price} | ${d.changePercentage}% | priority=2`);
 
   return {
     price:         parseFloat((d.price            ?? 0).toFixed(2)),
@@ -192,10 +281,10 @@ async function fetchFromYahoo(symbol) {
   const res = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "Accept": "application/json",
+      "Accept":     "application/json",
     },
   });
-  if (!res.ok) throw new Error(`Yahoo ${res.status} for ${symbol}`);
+  if (!res.ok) throw new Error(`Yahoo HTTP ${res.status} for ${symbol}`);
 
   const data = await res.json();
   const meta = data?.chart?.result?.[0]?.meta;
@@ -205,7 +294,7 @@ async function fetchFromYahoo(symbol) {
   if (!price || price === 0) throw new Error(`Yahoo zero price for ${symbol}`);
 
   const prevClose = parseFloat((meta.chartPreviousClose ?? meta.regularMarketPrice ?? 0).toFixed(2));
-  console.log(`[Yahoo] ${symbol} | price=${price}`);
+  console.log(`[Yahoo] ${symbol} | price=${price} | priority=3`);
 
   return {
     price,
@@ -219,13 +308,13 @@ async function fetchFromYahoo(symbol) {
 
 async function fetchFromBinance(symbol) {
   const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
-  if (!res.ok) throw new Error(`Binance ${res.status} for ${symbol}`);
+  if (!res.ok) throw new Error(`Binance HTTP ${res.status} for ${symbol}`);
 
-  const d = await res.json();
+  const d     = await res.json();
   const price = parseFloat(parseFloat(d.lastPrice).toFixed(2));
   if (!price || price === 0) throw new Error(`Binance zero price for ${symbol}`);
 
-  console.log(`[Binance] ${symbol} | price=${price}`);
+  console.log(`[Binance] ${symbol} | price=${price} | priority=1`);
 
   return {
     price,
@@ -237,94 +326,92 @@ async function fetchFromBinance(symbol) {
   };
 }
 
-// ─── tryInOrder: first-success wins, tags source ──────────────────
-async function tryInOrder(id, fns) {
-  for (let i = 0; i < fns.length; i++) {
+// ─────────────────────────────────────────────────────────────────
+// GET ASSET WITH FALLBACK
+// Replaces tryInOrder — now quality-gated at each step.
+// If Finnhub returns data but it fails validation → try FMP before giving up.
+// Logs every decision with symbol + reason.
+// ─────────────────────────────────────────────────────────────────
+async function getAssetWithFallback(id, fetchChain) {
+  const attempts = [];
+
+  for (const { name, fn } of fetchChain) {
+    let raw;
     try {
-      const result = await fns[i]();
-      return result; // _source already set inside each fetcher
-    } catch (e) {
-      console.warn(`[FALLBACK] ${id} attempt ${i + 1} failed: ${e.message}`);
+      raw = await fn();
+    } catch (fetchErr) {
+      const reason = fetchErr.message;
+      console.warn(`[SOURCE FAIL] ${id} [${name}]: ${reason}`);
+      attempts.push({ source: name, outcome: "fetch_error", reason });
+      continue; // Try next source
+    }
+
+    // Normalize and score the result
+    const result     = normalize(id, raw, raw._source ?? name);
+    const { valid, confidence, reason } = scoreAndValidate(id, result);
+
+    if (valid) {
+      console.log(`[SOURCE OK] ${id} [${name}]: price=${result.price} confidence=${confidence}`);
+      attempts.push({ source: name, outcome: "accepted", confidence });
+      return { ...result, confidence, attempts };
+    } else {
+      // Data came back but failed quality checks — try next source
+      console.warn(`[SOURCE REJECTED] ${id} [${name}]: ${reason} — falling back`);
+      attempts.push({ source: name, outcome: "rejected", reason });
     }
   }
+
+  // All sources exhausted
+  console.error(`[ALL SOURCES FAILED] ${id}: ${attempts.map(a => `${a.source}(${a.outcome})`).join(" → ")}`);
   throw new Error(`All sources failed for ${id}`);
 }
 
-// ─── Asset fetch config ───────────────────────────────────────────
-function getFetchFn(id) {
-  const configs = {
-    BTC: () => fetchFromBinance("BTCUSDT"),
-    ETH: () => fetchFromBinance("ETHUSDT"),
-    SPY: () => tryInOrder(id, [
-      () => fetchFromFinnhub("SPY"),
-      () => fetchFromFMP("SPY"),
-      () => fetchFromYahoo("SPY"),
-    ]),
-    QQQ: () => tryInOrder(id, [
-      () => fetchFromFinnhub("QQQ"),
-      () => fetchFromFMP("QQQ"),
-      () => fetchFromYahoo("QQQ"),
-    ]),
-    WTI: () => tryInOrder(id, [
-      () => fetchFromFinnhub("USOIL"),
-      () => fetchFromYahoo("CL=F"),
-      () => fetchFromFMP("USOIL"),
-    ]),
-    TNX: () => tryInOrder(id, [
-      () => fetchFromFinnhub("US10Y"),
-      () => fetchFromYahoo("^TNX"),
-    ]),
-    DXY: () => tryInOrder(id, [
-      () => fetchFromFinnhub("DXY"),
-      () => fetchFromYahoo("DX-Y.NYB"),
-    ]),
-    VIX: () => tryInOrder(id, [
-      () => fetchFromFMP("^VIX"),
-      () => fetchFromFinnhub("CBOE:VIX"),
-    ]),
+// ─── Asset fetch chains (ordered by source priority) ─────────────
+function getFetchChain(id) {
+  const chains = {
+    BTC: [{ name: "Binance", fn: () => fetchFromBinance("BTCUSDT") }],
+    ETH: [{ name: "Binance", fn: () => fetchFromBinance("ETHUSDT") }],
+    SPY: [
+      { name: "Finnhub", fn: () => fetchFromFinnhub("SPY")   },
+      { name: "FMP",     fn: () => fetchFromFMP("SPY")       },
+      { name: "Yahoo",   fn: () => fetchFromYahoo("SPY")     },
+    ],
+    QQQ: [
+      { name: "Finnhub", fn: () => fetchFromFinnhub("QQQ")   },
+      { name: "FMP",     fn: () => fetchFromFMP("QQQ")       },
+      { name: "Yahoo",   fn: () => fetchFromYahoo("QQQ")     },
+    ],
+    WTI: [
+      { name: "Finnhub", fn: () => fetchFromFinnhub("USOIL") },
+      { name: "Yahoo",   fn: () => fetchFromYahoo("CL=F")    },
+      { name: "FMP",     fn: () => fetchFromFMP("USOIL")     },
+    ],
+    TNX: [
+      { name: "Finnhub", fn: () => fetchFromFinnhub("US10Y") },
+      { name: "Yahoo",   fn: () => fetchFromYahoo("^TNX")    },
+    ],
+    DXY: [
+      { name: "Finnhub", fn: () => fetchFromFinnhub("DXY")         },
+      { name: "Yahoo",   fn: () => fetchFromYahoo("DX-Y.NYB")      },
+    ],
+    VIX: [
+      { name: "FMP",     fn: () => fetchFromFMP("^VIX")            },
+      { name: "Finnhub", fn: () => fetchFromFinnhub("CBOE:VIX")    },
+    ],
   };
-  return configs[id] ?? null;
-}
-
-// ─── Validation ───────────────────────────────────────────────────
-function validate(id, incoming) {
-  const { price, timestamp } = incoming;
-
-  if (!price || price <= 0 || isNaN(price)) {
-    console.warn(`[VALIDATE] ${id}: REJECTED — price=${price}`);
-    return "error";
-  }
-
-  if (timestamp) {
-    const ageMs = Date.now() - new Date(timestamp).getTime();
-    if (ageMs > 2 * 60 * 1000) {
-      console.warn(`[VALIDATE] ${id}: STALE — age=${Math.round(ageMs / 1000)}s`);
-      return "stale";
-    }
-  }
-
-  const prev = _lastValid[id]?.price;
-  if (prev && prev > 0) {
-    const deviation = Math.abs((price - prev) / prev);
-    if (deviation > 0.10) {
-      console.warn(`[VALIDATE] ${id}: SUSPICIOUS — ${price} vs ${prev} (${(deviation * 100).toFixed(1)}% dev)`);
-      return "error";
-    }
-  }
-
-  return "valid";
+  return chains[id] ?? null;
 }
 
 // ─── Fallback prices ──────────────────────────────────────────────
 const FALLBACK = {
-  BTC: { symbol:"BTC", price:84320,  change:0,     percentChange:0,     marketState:"REGULAR", prevClose:84320,  source:"fallback", timestamp:null, status:"error", cached:false },
-  ETH: { symbol:"ETH", price:1580,   change:0,     percentChange:0,     marketState:"REGULAR", prevClose:1580,   source:"fallback", timestamp:null, status:"error", cached:false },
-  VIX: { symbol:"VIX", price:17.04,  change:0,     percentChange:0,     marketState:"CLOSED",  prevClose:17.04,  source:"fallback", timestamp:null, status:"error", cached:false },
-  SPY: { symbol:"SPY", price:679.46, change:-0.30, percentChange:-0.07, marketState:"CLOSED",  prevClose:679.91, source:"fallback", timestamp:null, status:"error", cached:false },
-  QQQ: { symbol:"QQQ", price:578.32, change:-0.70, percentChange:-0.12, marketState:"CLOSED",  prevClose:578.50, source:"fallback", timestamp:null, status:"error", cached:false },
-  WTI: { symbol:"WTI", price:96.57,  change:-1.30, percentChange:-1.33, marketState:"CLOSED",  prevClose:97.87,  source:"fallback", timestamp:null, status:"error", cached:false },
-  TNX: { symbol:"TNX", price:4.34,   change:-0.04, percentChange:-0.09, marketState:"CLOSED",  prevClose:4.38,   source:"fallback", timestamp:null, status:"error", cached:false },
-  DXY: { symbol:"DXY", price:98.87,  change:-0.15, percentChange:-0.15, marketState:"CLOSED",  prevClose:99.02,  source:"fallback", timestamp:null, status:"error", cached:false },
+  BTC: { symbol:"BTC", price:84320,  change:0,     percentChange:0,     marketState:"REGULAR", prevClose:84320,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  ETH: { symbol:"ETH", price:1580,   change:0,     percentChange:0,     marketState:"REGULAR", prevClose:1580,   source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  VIX: { symbol:"VIX", price:17.04,  change:0,     percentChange:0,     marketState:"CLOSED",  prevClose:17.04,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  SPY: { symbol:"SPY", price:679.46, change:-0.30, percentChange:-0.07, marketState:"CLOSED",  prevClose:679.91, source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  QQQ: { symbol:"QQQ", price:578.32, change:-0.70, percentChange:-0.12, marketState:"CLOSED",  prevClose:578.50, source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  WTI: { symbol:"WTI", price:96.57,  change:-1.30, percentChange:-1.33, marketState:"CLOSED",  prevClose:97.87,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  TNX: { symbol:"TNX", price:4.34,   change:-0.04, percentChange:-0.09, marketState:"CLOSED",  prevClose:4.38,   source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
+  DXY: { symbol:"DXY", price:98.87,  change:-0.15, percentChange:-0.15, marketState:"CLOSED",  prevClose:99.02,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -335,10 +422,10 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET");
   res.setHeader("Cache-Control", "no-store, no-cache");
 
-  const fetchedAt    = new Date().toISOString();
-  const marketOpen   = isMarketOpen();
-  const skipVIX      = !marketOpen; // Never poll VIX when market closed — saves FMP quota
-  const rateLimits   = getRateLimitStatus();
+  const fetchedAt  = new Date().toISOString();
+  const marketOpen = isMarketOpen();
+  const skipVIX    = !marketOpen;
+  const rateLimits = getRateLimitStatus();
 
   console.log(`[/api/prices] ${fetchedAt} | market=${marketOpen ? "OPEN" : "CLOSED"} | finnhub=${rateLimits.finnhub.calls}/${rateLimits.finnhub.limit} | fmp=${rateLimits.fmp.calls}/${rateLimits.fmp.limit}`);
 
@@ -349,77 +436,58 @@ export default async function handler(req, res) {
   const staleIds = [];
   for (const id of ids) {
     if (id === "VIX" && skipVIX) {
-      // Market closed — return last valid VIX, no fetch
       const saved = _lastValid.VIX ?? FALLBACK.VIX;
-      assets.VIX = { ...saved, cached: true, status: saved.status ?? "stale", statusReason: "market_closed" };
+      assets.VIX  = { ...saved, cached: true, status: "stale", statusReason: "market_closed" };
       continue;
     }
-
     if (isCacheFresh(id)) {
-      // Cache hit — return immediately, no upstream call
-      const cached = getCacheEntry(id);
-      assets[id] = { ...cached, cached: true };
-      console.log(`[CACHE HIT] ${id} | tier=${ASSET_TIER[id]?.label} | age=${Math.round((Date.now() - _cache[id].fetchedAt) / 1000)}s`);
+      assets[id] = { ...getCacheEntry(id), cached: true };
+      console.log(`[CACHE HIT] ${id} | age=${Math.round((Date.now() - _cache[id].fetchedAt) / 1000)}s | confidence=${assets[id].confidence}`);
     } else {
       staleIds.push(id);
     }
   }
 
-  // ── Step 2: If near rate limit, throttle low-priority stale assets ─
+  // ── Step 2: Throttle LOW-priority if near rate limit ─────────────
   const throttledIds = [];
-  if (rateLimits.finnhub.nearLimit || rateLimits.fmp.nearLimit) {
-    const lowPriority = staleIds.filter(id => ASSET_TIER[id] === TIERS.LOW);
-    for (const id of lowPriority) {
-      const saved = _lastValid[id] ?? getCacheEntry(id) ?? FALLBACK[id];
-      if (saved) {
-        assets[id] = { ...saved, cached: true, status: "stale", statusReason: "rate_limited" };
+  if (rateLimits.finnhub.calls >= rateLimits.finnhub.limit || rateLimits.fmp.calls >= rateLimits.fmp.limit) {
+    staleIds
+      .filter(id => ASSET_TIER[id] === TIERS.LOW)
+      .forEach(id => {
+        const saved = _lastValid[id] ?? getCacheEntry(id) ?? FALLBACK[id];
+        assets[id]  = { ...saved, cached: true, status: "stale", statusReason: "rate_limited", confidence: "low" };
         throttledIds.push(id);
-        console.warn(`[THROTTLE] ${id} — rate limit near, serving last known`);
-      }
-    }
+        console.warn(`[THROTTLE] ${id} — rate limit reached, serving cached`);
+      });
   }
 
-  // Remaining IDs that actually need a fresh fetch
   const fetchIds = staleIds.filter(id => !throttledIds.includes(id));
 
   // ── Step 3: Fetch stale assets in parallel ────────────────────────
   await Promise.all(
     fetchIds.map(id => {
-      const fetchFn = getFetchFn(id);
-      if (!fetchFn) return Promise.resolve();
+      const chain = getFetchChain(id);
+      if (!chain) return Promise.resolve();
 
-      return fetchFn()
-        .then(raw => {
-          const result  = normalize(id, raw, raw._source ?? "unknown");
-          const vstatus = validate(id, result);
-
-          if (vstatus === "valid") {
-            _lastValid[id] = result;
-            setCacheEntry(id, { ...result, status: "valid" });
-            assets[id] = { ...result, status: "valid", cached: false };
-          } else if (vstatus === "stale") {
-            assets[id] = { ...result, status: "stale", statusReason: "timestamp_old", cached: false };
-          } else {
-            const saved = _lastValid[id] ?? FALLBACK[id];
-            assets[id] = { ...saved, status: "error", statusReason: "validation_failed", rejectedPrice: result.price, cached: false };
-            console.warn(`[STATUS] ${id}: rejected price=${result.price}, serving=${saved.price}`);
-          }
-
-          console.log(`[RESULT] ${id}: $${assets[id].price} (${assets[id].percentChange}%) src=${assets[id].source} cached=false tier=${ASSET_TIER[id]?.label}`);
+      return getAssetWithFallback(id, chain)
+        .then(result => {
+          _lastValid[id] = result;
+          setCacheEntry(id, result);
+          assets[id] = { ...result, status: "valid", cached: false };
+          console.log(`[RESULT] ${id}: $${result.price} (${result.percentChange}%) src=${result.source} confidence=${result.confidence}`);
         })
         .catch(e => {
           console.error(`[FAIL] ${id}: ${e.message}`);
           const saved = _lastValid[id] ?? FALLBACK[id];
-          assets[id] = { ...saved, status: "error", statusReason: "fetch_failed", cached: false };
+          assets[id]  = { ...saved, status: "error", statusReason: "all_sources_failed", confidence: "low", cached: false };
         });
     })
   );
 
-  // ── Step 4: Fill any gaps ─────────────────────────────────────────
+  // ── Step 4: Fill gaps ─────────────────────────────────────────────
   for (const id of ids) {
     if (!assets[id]) {
-      const saved = _lastValid[id] ?? FALLBACK[id];
-      assets[id]  = { ...saved, cached: true, status: "stale", statusReason: "no_data" };
+      assets[id] = { ...(_lastValid[id] ?? FALLBACK[id]), cached: true, status: "stale", statusReason: "no_data", confidence: "low" };
     }
   }
 
@@ -427,7 +495,7 @@ export default async function handler(req, res) {
     fetchedAt,
     marketOpen,
     rateLimits,
-    cacheHits:  ids.filter(id => assets[id]?.cached).length,
+    cacheHits:    ids.filter(id => assets[id]?.cached).length,
     freshFetches: fetchIds.length,
     assets,
   });

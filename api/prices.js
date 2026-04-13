@@ -402,7 +402,35 @@ function getFetchChain(id) {
   return chains[id] ?? null;
 }
 
-// ─── Fallback prices ──────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// SYSTEM STATUS TRACKER
+// Module-level — tracks consecutive outage counts per asset
+// Used to determine global LIVE / DEGRADED / OFFLINE status
+// ─────────────────────────────────────────────────────────────────
+const _failCounts = {};   // id → consecutive fetch failure count
+const _systemLog  = { lastStatus: "LIVE", degradedAt: null };
+
+function computeSystemStatus(assets, ids) {
+  const errorCount    = ids.filter(id => assets[id]?.isFallback).length;
+  const totalTracked  = ids.length;
+
+  let status;
+  if (errorCount === 0)                       status = "LIVE";
+  else if (errorCount < totalTracked * 0.5)   status = "DEGRADED";   // <50% fallback
+  else                                         status = "OFFLINE";    // ≥50% fallback
+
+  // Log transition into degraded/offline — only once per change
+  if (status !== "LIVE" && _systemLog.lastStatus === "LIVE") {
+    _systemLog.degradedAt = new Date().toISOString();
+    console.warn(`[SYSTEM] Status changed: LIVE → ${status} at ${_systemLog.degradedAt} | ${errorCount}/${totalTracked} assets on fallback`);
+  } else if (status === "LIVE" && _systemLog.lastStatus !== "LIVE") {
+    console.log(`[SYSTEM] Recovered: ${_systemLog.lastStatus} → LIVE after ${Math.round((Date.now() - new Date(_systemLog.degradedAt).getTime()) / 1000)}s`);
+    _systemLog.degradedAt = null;
+  }
+
+  _systemLog.lastStatus = status;
+  return { status, errorCount, totalTracked, degradedAt: _systemLog.degradedAt };
+}
 const FALLBACK = {
   BTC: { symbol:"BTC", price:84320,  change:0,     percentChange:0,     marketState:"REGULAR", prevClose:84320,  source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
   ETH: { symbol:"ETH", price:1580,   change:0,     percentChange:0,     marketState:"REGULAR", prevClose:1580,   source:"fallback", timestamp:null, status:"error", confidence:"low", cached:false },
@@ -471,15 +499,24 @@ export default async function handler(req, res) {
 
       return getAssetWithFallback(id, chain)
         .then(result => {
-          _lastValid[id] = result;
+          _lastValid[id]  = result;
+          _failCounts[id] = 0;   // reset on success
           setCacheEntry(id, result);
-          assets[id] = { ...result, status: "valid", cached: false };
+          assets[id] = { ...result, status: "valid", cached: false, isFallback: false };
           console.log(`[RESULT] ${id}: $${result.price} (${result.percentChange}%) src=${result.source} confidence=${result.confidence}`);
         })
         .catch(e => {
-          console.error(`[FAIL] ${id}: ${e.message}`);
+          _failCounts[id] = (_failCounts[id] ?? 0) + 1;
+          console.error(`[FAIL] ${id} (fail #${_failCounts[id]}): ${e.message}`);
           const saved = _lastValid[id] ?? FALLBACK[id];
-          assets[id]  = { ...saved, status: "error", statusReason: "all_sources_failed", confidence: "low", cached: false };
+          assets[id]  = {
+            ...saved,
+            status:       "error",
+            statusReason: "all_sources_failed",
+            confidence:   "low",
+            cached:       false,
+            isFallback:   true,   // both Finnhub and FMP failed — serving last known
+          };
         });
     })
   );
@@ -487,14 +524,26 @@ export default async function handler(req, res) {
   // ── Step 4: Fill gaps ─────────────────────────────────────────────
   for (const id of ids) {
     if (!assets[id]) {
-      assets[id] = { ...(_lastValid[id] ?? FALLBACK[id]), cached: true, status: "stale", statusReason: "no_data", confidence: "low" };
+      const saved = _lastValid[id] ?? FALLBACK[id];
+      const isHardFallback = !_lastValid[id]; // true if using hardcoded constant
+      assets[id] = {
+        ...saved,
+        cached:       true,
+        status:       "stale",
+        statusReason: "no_data",
+        confidence:   "low",
+        isFallback:   isHardFallback,
+      };
     }
   }
+
+  const systemStatus = computeSystemStatus(assets, ids);
 
   res.status(200).json({
     fetchedAt,
     marketOpen,
     rateLimits,
+    systemStatus,
     cacheHits:    ids.filter(id => assets[id]?.cached).length,
     freshFetches: fetchIds.length,
     assets,

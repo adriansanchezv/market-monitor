@@ -312,12 +312,14 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
 
     const data = json.assets ?? json;
 
+    // Persist systemStatus on the cache so the hook can surface it
+    if (json.systemStatus) _priceCache._systemStatus = json.systemStatus;
+
     Object.entries(data).forEach(([id, val]) => {
       if (val?.price) {
-        // Backend now uses percentChange — map to change for UI compatibility
         const change = val.percentChange ?? val.change ?? 0;
         _priceCache[id] = { ...val, change };
-        console.log(`[Price] ${id}: $${val.price} (${change >= 0 ? "+" : ""}${change.toFixed(2)}%) | src=${val.source ?? "?"} | conf=${val.confidence ?? "?"} | cached=${val.cached ?? false}`);
+        console.log(`[Price] ${id}: $${val.price} (${change >= 0 ? "+" : ""}${change.toFixed(2)}%) | src=${val.source ?? "?"} | conf=${val.confidence ?? "?"} | fallback=${val.isFallback ?? false}`);
       }
     });
   } catch (e) {
@@ -335,6 +337,7 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
     status:      _priceCache[meta.id]?.status      ?? "valid",
     confidence:  _priceCache[meta.id]?.confidence  ?? "low",
     cached:      _priceCache[meta.id]?.cached      ?? false,
+    isFallback:  _priceCache[meta.id]?.isFallback  ?? false,
   }));
 };
 
@@ -499,7 +502,8 @@ const useMarketData = (isPaused = false) => {
     };
   }, [connectWS, fetchAndUpdate]);
 
-  return { assets, lastUpdated, error, wsConnected };
+  const systemStatus = _priceCache._systemStatus ?? { status: "LIVE", errorCount: 0 };
+  return { assets, lastUpdated, error, wsConnected, systemStatus };
 };
 
 // ─────────────────────────────────────────────
@@ -915,6 +919,7 @@ const AssetCard = memo(({ asset, debugMode }) => {
   const dataStatus  = asset.status ?? "valid";
   const isStale     = dataStatus === "stale";
   const isDataError = dataStatus === "error";
+  const isFallback  = asset.isFallback === true;
 
   // Confidence — dims card and source label when low
   const confidence    = asset.confidence ?? "high";
@@ -1011,6 +1016,15 @@ const AssetCard = memo(({ asset, debugMode }) => {
                 flexShrink: 0,
               }} />
             )}
+            {/* Fallback badge — shown when all APIs failed, serving last known price */}
+            {isFallback && (
+              <span style={{
+                fontSize: 8, padding: "1px 5px", borderRadius: 2,
+                background: "rgba(255,140,0,0.1)", color: "#ff8c00",
+                fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+                border: "1px solid rgba(255,140,0,0.2)", whiteSpace: "nowrap",
+              }} title="All APIs failed — showing last known price">FALLBACK</span>
+            )}
             {!showClosed && !isStale && !isDataError && isNearHigh && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(0,255,136,0.15)", color: "#00ff88", fontFamily: "'Space Mono', monospace" }}>24H HI</span>}
             {!showClosed && !isStale && !isDataError && isNearLow  && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(255,68,102,0.15)", color: "#ff4466", fontFamily: "'Space Mono', monospace" }}>24H LO</span>}
           </div>
@@ -1033,19 +1047,19 @@ const AssetCard = memo(({ asset, debugMode }) => {
       {/* Source label + cache indicator — always visible, small */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          {/* Source badge — only shown for known sources */}
-          {sourceLabel && (
-            <span style={{
-              fontSize: 8, padding: "1px 4px", borderRadius: 2,
-              background: isLowConf   ? "rgba(255,68,102,0.1)"
-                         : isMediumConf ? "rgba(255,215,0,0.08)"
-                         : "rgba(0,255,136,0.08)",
-              color: isLowConf   ? "#ff4466"
-                   : isMediumConf ? "#ffd700"
-                   : "#00ff88",
-              fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
-              border: `1px solid ${isLowConf ? "rgba(255,68,102,0.2)" : isMediumConf ? "rgba(255,215,0,0.15)" : "rgba(0,255,136,0.15)"}`,
-            }}>{sourceLabel}</span>
+          {/* Source badge — per-source color + hover tooltip */}
+          {sourceCfg && (
+            <span
+              title={sourceCfg.title}
+              style={{
+                fontSize: 8, padding: "1px 4px", borderRadius: 2,
+                background: sourceCfg.bg,
+                color:      sourceCfg.color,
+                fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+                border:     `1px solid ${sourceCfg.border}`,
+                cursor:     "default",
+              }}
+            >{sourceCfg.label}</span>
           )}
           {/* Cache indicator — only show when serving cached data */}
           {isCached && (
@@ -2153,7 +2167,7 @@ const PrivateCreditPanel = memo(() => {
 });
 export default function MarketMonitor() {
   const [isPaused, setIsPaused] = useState(false);
-  const { assets, lastUpdated, error, wsConnected } = useMarketData(isPaused);
+  const { assets, lastUpdated, error, wsConnected, systemStatus } = useMarketData(isPaused);
 
   // Compute regime here so both useAlerts and MarketRegimeCard share it
   const currentRegime = useMemo(() => {
@@ -2435,6 +2449,25 @@ export default function MarketMonitor() {
                 {isPaused ? "PAUSED" : wsConnected ? "WS LIVE" : IS_LOCALHOST ? "POLLING" : "WS OFF"}
               </span>
             </div>
+            {/* System status pill */}
+            {(() => {
+              const s = systemStatus?.status ?? "LIVE";
+              const sColor = s === "LIVE" ? "#00ff88" : s === "DEGRADED" ? "#ffd700" : "#ff4466";
+              const sBg    = s === "LIVE" ? "rgba(0,255,136,0.08)" : s === "DEGRADED" ? "rgba(255,215,0,0.1)" : "rgba(255,68,102,0.12)";
+              if (s === "LIVE") return null; // only show when not fully live
+              return (
+                <div style={{
+                  marginTop: 2,
+                  fontSize: 8, padding: "1px 6px", borderRadius: 2,
+                  background: sBg, color: sColor,
+                  fontFamily: "'Space Mono', monospace", letterSpacing: 1,
+                  border: `1px solid ${sColor}44`,
+                  textAlign: "center",
+                }} title={`${systemStatus?.errorCount ?? 0}/${systemStatus?.totalTracked ?? 0} assets on fallback`}>
+                  SYS {s}
+                </div>
+              );
+            })()}
           </div>
         </div>
       </header>

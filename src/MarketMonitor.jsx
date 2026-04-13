@@ -133,11 +133,16 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
     const url = skipVIX ? "/api/prices?skipVIX=1" : "/api/prices";
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`/api/prices ${res.status}`);
-    const data = await res.json();
+    const json = await res.json();
 
-    // Merge into cache
+    // Handle both old shape { id: {...} } and new shape { fetchedAt, assets: { id: {...} } }
+    const data = json.assets ?? json;
+
     Object.entries(data).forEach(([id, val]) => {
-      if (val?.price) _priceCache[id] = val;
+      if (val?.price) {
+        _priceCache[id] = val;
+        console.log(`[Price] ${id}: $${val.price} (${val.change >= 0 ? "+" : ""}${val.change}%) | src=${val.source ?? "?"} | ts=${val.timestamp ?? "?"}`);
+      }
     });
   } catch (e) {
     console.warn("[fetchAllPrices]", e.message);
@@ -149,6 +154,9 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
     change:      parseFloat((_priceCache[meta.id]?.change      ?? MOCK_PRICES[meta.id].change).toFixed(2)),
     marketState: _priceCache[meta.id]?.marketState ?? "CLOSED",
     prevClose:   _priceCache[meta.id]?.prevClose   ?? null,
+    source:      _priceCache[meta.id]?.source      ?? "fallback",
+    timestamp:   _priceCache[meta.id]?.timestamp   ?? null,
+    status:      _priceCache[meta.id]?.status      ?? "valid",
   }));
 };
 
@@ -462,7 +470,7 @@ const Sparkline = ({ data, change }) => {
   );
 };
 
-const AssetCard = memo(({ asset }) => {
+const AssetCard = memo(({ asset, debugMode }) => {
   const [flashing, setFlashing] = useState(false);
   const [justUpdated, setJustUpdated] = useState(false);
   const prevPrice = useRef(asset.price);
@@ -482,8 +490,12 @@ const AssetCard = memo(({ asset }) => {
   const color = sentimentColor(asset.change);
   const isLive = asset.marketState === "REGULAR";
   const isClosed = asset.marketState === "CLOSED" || !asset.marketState;
-  // Crypto is always live — never show closed
   const showClosed = isClosed && asset.category !== "crypto";
+
+  // Status — stale or error override normal display
+  const dataStatus  = asset.status ?? "valid";
+  const isStale     = dataStatus === "stale";
+  const isDataError = dataStatus === "error";
 
   // dollar change from sparkline start
   const sparkFirst = asset.sparkline?.[0]?.v ?? asset.price;
@@ -501,19 +513,25 @@ const AssetCard = memo(({ asset }) => {
     <div style={{
       background: flashing
         ? `rgba(${isPos ? "0,255,136" : "255,68,102"},0.10)`
+        : isDataError ? "rgba(255,68,102,0.05)"
+        : isStale     ? "rgba(255,215,0,0.03)"
         : isPos ? "rgba(0,255,136,0.03)" : "rgba(255,68,102,0.03)",
-      border: `1px solid ${isPos ? "rgba(0,255,136,0.12)" : "rgba(255,68,102,0.12)"}`,
+      border: isDataError ? "1px solid rgba(255,68,102,0.25)"
+            : isStale     ? "1px solid rgba(255,215,0,0.2)"
+            : `1px solid ${isPos ? "rgba(0,255,136,0.12)" : "rgba(255,68,102,0.12)"}`,
       borderRadius: 8,
       padding: "10px 12px 10px 14px",
       transition: "background 0.4s ease, border 0.4s ease",
       cursor: "pointer",
       position: "relative",
       overflow: "hidden",
+      opacity: isDataError ? 0.7 : 1,
     }}>
       {/* colored left accent bar */}
       <div style={{
         position: "absolute", left: 0, top: 0, bottom: 0, width: 3,
-        background: color, borderRadius: "8px 0 0 8px", opacity: 0.8,
+        background: isDataError ? "#ff4466" : isStale ? "#ffd700" : color,
+        borderRadius: "8px 0 0 8px", opacity: 0.8,
       }} />
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
@@ -522,7 +540,22 @@ const AssetCard = memo(({ asset }) => {
             <span style={{ fontSize: 11, color: "#999", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
               {asset.id}
             </span>
-            {showClosed ? (
+            {/* Status badges — priority: error > stale > closed > live dot */}
+            {isDataError ? (
+              <span style={{
+                fontSize: 8, padding: "1px 5px", borderRadius: 2,
+                background: "rgba(255,68,102,0.15)", color: "#ff4466",
+                fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+                border: "1px solid rgba(255,68,102,0.3)", whiteSpace: "nowrap",
+              }}>DATA ERR</span>
+            ) : isStale ? (
+              <span style={{
+                fontSize: 8, padding: "1px 5px", borderRadius: 2,
+                background: "rgba(255,215,0,0.12)", color: "#ffd700",
+                fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+                border: "1px solid rgba(255,215,0,0.25)", whiteSpace: "nowrap",
+              }}>STALE</span>
+            ) : showClosed ? (
               <span style={{
                 fontSize: 8, padding: "1px 5px", borderRadius: 2,
                 background: "rgba(255,255,255,0.05)", color: "#555",
@@ -538,24 +571,36 @@ const AssetCard = memo(({ asset }) => {
                 flexShrink: 0,
               }} />
             )}
-            {!showClosed && isNearHigh && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(0,255,136,0.15)", color: "#00ff88", fontFamily: "'Space Mono', monospace" }}>24H HI</span>}
-            {!showClosed && isNearLow  && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(255,68,102,0.15)", color: "#ff4466", fontFamily: "'Space Mono', monospace" }}>24H LO</span>}
+            {!showClosed && !isStale && !isDataError && isNearHigh && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(0,255,136,0.15)", color: "#00ff88", fontFamily: "'Space Mono', monospace" }}>24H HI</span>}
+            {!showClosed && !isStale && !isDataError && isNearLow  && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "rgba(255,68,102,0.15)", color: "#ff4466", fontFamily: "'Space Mono', monospace" }}>24H LO</span>}
           </div>
           <div style={{ fontSize: 12, color: "#888" }}>{asset.label}</div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: showClosed ? "#888" : "#f0f0f0", fontFamily: "'Space Mono', monospace", letterSpacing: -0.5 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: isDataError ? "#ff4466" : showClosed || isStale ? "#888" : "#f0f0f0", fontFamily: "'Space Mono', monospace", letterSpacing: -0.5 }}>
             {fmtPrice(asset.price, asset.unit)}
           </div>
-          <div style={{ fontSize: 11, color: showClosed ? "#555" : color, fontWeight: 700, fontFamily: "'Space Mono', monospace" }}>
+          <div style={{ fontSize: 11, color: isDataError || isStale ? "#555" : color, fontWeight: 700, fontFamily: "'Space Mono', monospace" }}>
             {fmtChange(asset.change)}
           </div>
-          <div style={{ fontSize: 10, color: showClosed ? "#444" : color, opacity: 0.65, fontFamily: "'Space Mono', monospace" }}>
+          <div style={{ fontSize: 10, color: isDataError || isStale ? "#444" : color, opacity: 0.65, fontFamily: "'Space Mono', monospace" }}>
             {dollarStr}
           </div>
         </div>
       </div>
       <Sparkline data={asset.sparkline} change={asset.change} />
+      {debugMode && (
+        <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid rgba(0,170,255,0.15)" }}>
+          <div style={{ fontSize: 9, color: "#00aaff", fontFamily: "'Space Mono', monospace", lineHeight: 1.6 }}>
+            <span style={{ color: "#555" }}>src:</span> {asset.source ?? "?"} &nbsp;
+            <span style={{ color: "#555" }}>state:</span> {asset.marketState ?? "?"} &nbsp;
+            <span style={{ color: dataStatus === "valid" ? "#00ff88" : dataStatus === "stale" ? "#ffd700" : "#ff4466" }}>
+              {dataStatus.toUpperCase()}
+            </span><br />
+            <span style={{ color: "#555" }}>ts:</span> {asset.timestamp ? new Date(asset.timestamp).toLocaleTimeString() : "fallback"}
+          </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -1023,6 +1068,315 @@ const LiveStreamPanel = memo(() => {
 });
 
 // ─────────────────────────────────────────────
+// PORTFOLIO — v1
+// Edit PORTFOLIO_POSITIONS to match your real holdings
+// ─────────────────────────────────────────────
+
+const PORTFOLIO_POSITIONS = [
+  { id: "PLTR",  label: "Palantir",        shares: 150,  avgCost: 18.42, assetId: null,  unit: "$" },
+  { id: "SOFI",  label: "SoFi Technologies",shares: 200, avgCost: 7.85,  assetId: null,  unit: "$" },
+  { id: "ARCC",  label: "Ares Capital",     shares: 80,  avgCost: 19.50, assetId: null,  unit: "$" },
+  { id: "BTC",   label: "Bitcoin",          shares: 0.05, avgCost: 62000, assetId: "BTC", unit: "$" },
+  { id: "ETH",   label: "Ethereum",         shares: 1.2,  avgCost: 2800,  assetId: "ETH", unit: "$" },
+];
+
+// Mock current prices for positions not tracked in the main asset panel
+const PORTFOLIO_MOCK_PRICES = {
+  PLTR: 25.18,
+  SOFI: 9.42,
+  ARCC: 21.34,
+};
+
+// ─── Pure calculation helper — no UI logic ───────────────────────
+function calcPortfolio(positions, liveAssets) {
+  const rows = positions.map(pos => {
+    // Use live price from asset panel if available, else mock
+    const liveAsset = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
+    const currentPrice = liveAsset?.price ?? PORTFOLIO_MOCK_PRICES[pos.id] ?? pos.avgCost;
+
+    const costBasis      = pos.shares * pos.avgCost;
+    const currentValue   = pos.shares * currentPrice;
+    const unrealizedPnL  = currentValue - costBasis;
+    const unrealizedPct  = costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0;
+
+    return { ...pos, currentPrice, costBasis, currentValue, unrealizedPnL, unrealizedPct };
+  });
+
+  const totalValue    = rows.reduce((s, r) => s + r.currentValue, 0);
+  const totalCost     = rows.reduce((s, r) => s + r.costBasis, 0);
+  const totalPnL      = totalValue - totalCost;
+  const totalPnLPct   = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+
+  // Add allocation % to each row
+  const rowsWithAlloc = rows.map(r => ({
+    ...r,
+    allocation: totalValue > 0 ? (r.currentValue / totalValue) * 100 : 0,
+  }));
+
+  return { rows: rowsWithAlloc, totalValue, totalCost, totalPnL, totalPnLPct };
+}
+
+const LIVE_ASSET_IDS = ["BTC", "ETH", "SPY", "QQQ", "VIX", "WTI", "DXY", "TNX"];
+
+const EMPTY_FORM = { id: "", label: "", shares: "", avgCost: "", assetId: "", unit: "$" };
+
+const PortfolioPanel = ({ assets }) => {
+  // Load from localStorage or fall back to defaults
+  const [positions, setPositions] = useState(() => {
+    try {
+      const saved = localStorage.getItem("portfolio_positions");
+      return saved ? JSON.parse(saved) : PORTFOLIO_POSITIONS;
+    } catch { return PORTFOLIO_POSITIONS; }
+  });
+
+  const [editingId, setEditingId] = useState(null); // id of position being edited
+  const [showForm, setShowForm]   = useState(false); // add new form visible
+  const [form, setForm]           = useState(EMPTY_FORM);
+  const [formError, setFormError] = useState("");
+
+  // Persist to localStorage on every change
+  const save = (updated) => {
+    setPositions(updated);
+    try { localStorage.setItem("portfolio_positions", JSON.stringify(updated)); } catch {}
+  };
+
+  const fmt$ = (n) => `$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtPct = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+  const pnlColor = (n) => n >= 0 ? "#00ff88" : "#ff4466";
+
+  const { rows, totalValue, totalPnL, totalPnLPct } = calcPortfolio(positions, assets);
+
+  // ── Form handlers ─────────────────────────────────────────────
+  const openAdd = () => {
+    setForm(EMPTY_FORM);
+    setEditingId(null);
+    setFormError("");
+    setShowForm(true);
+  };
+
+  const openEdit = (pos) => {
+    setForm({ ...pos, shares: String(pos.shares), avgCost: String(pos.avgCost) });
+    setEditingId(pos.id);
+    setFormError("");
+    setShowForm(true);
+  };
+
+  const closeForm = () => { setShowForm(false); setEditingId(null); setForm(EMPTY_FORM); setFormError(""); };
+
+  const validateForm = () => {
+    if (!form.id.trim())            return "Ticker is required";
+    if (!form.label.trim())         return "Name is required";
+    if (isNaN(form.shares) || parseFloat(form.shares) <= 0)   return "Shares must be a positive number";
+    if (isNaN(form.avgCost) || parseFloat(form.avgCost) <= 0) return "Avg cost must be a positive number";
+    if (!editingId && positions.find(p => p.id.toUpperCase() === form.id.toUpperCase())) return "Ticker already exists";
+    return "";
+  };
+
+  const submitForm = () => {
+    const err = validateForm();
+    if (err) { setFormError(err); return; }
+    const entry = {
+      id:      form.id.toUpperCase().trim(),
+      label:   form.label.trim(),
+      shares:  parseFloat(form.shares),
+      avgCost: parseFloat(form.avgCost),
+      assetId: LIVE_ASSET_IDS.includes(form.id.toUpperCase().trim()) ? form.id.toUpperCase().trim() : null,
+      unit:    "$",
+    };
+    if (editingId) {
+      save(positions.map(p => p.id === editingId ? entry : p));
+    } else {
+      save([...positions, entry]);
+    }
+    closeForm();
+  };
+
+  const deletePosition = (id) => {
+    if (window.confirm(`Remove ${id} from portfolio?`)) save(positions.filter(p => p.id !== id));
+  };
+
+  // ── Input style helper ────────────────────────────────────────
+  const inputStyle = {
+    background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 4, padding: "6px 10px", color: "#e8e8e8", fontSize: 12,
+    fontFamily: "'Space Mono', monospace", width: "100%", outline: "none",
+    boxSizing: "border-box",
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+      {/* Summary bar */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+        {[
+          { label: "Portfolio Value", value: fmt$(totalValue),                                     color: "#f0f0f0" },
+          { label: "Total P&L",       value: `${totalPnL >= 0 ? "+" : "-"}${fmt$(totalPnL)}`,     color: pnlColor(totalPnL) },
+          { label: "Return",          value: fmtPct(totalPnLPct),                                  color: pnlColor(totalPnLPct) },
+        ].map(stat => (
+          <div key={stat.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "10px 14px" }}>
+            <div style={{ fontSize: 9, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>{stat.label}</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: stat.color, fontFamily: "'Space Mono', monospace" }}>{stat.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Add / Edit form */}
+      {showForm && (
+        <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(0,170,255,0.2)", borderRadius: 8, padding: 16 }}>
+          <div style={{ fontSize: 11, color: "#00aaff", fontFamily: "'Space Mono', monospace", letterSpacing: 1, marginBottom: 12 }}>
+            {editingId ? `EDIT — ${editingId}` : "ADD POSITION"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>TICKER *</div>
+              <input
+                style={{ ...inputStyle, textTransform: "uppercase" }}
+                value={form.id}
+                onChange={e => setForm(f => ({ ...f, id: e.target.value }))}
+                placeholder="PLTR"
+                disabled={!!editingId}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>NAME *</div>
+              <input
+                style={inputStyle}
+                value={form.label}
+                onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+                placeholder="Palantir"
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>SHARES *</div>
+              <input
+                style={inputStyle}
+                value={form.shares}
+                onChange={e => setForm(f => ({ ...f, shares: e.target.value }))}
+                placeholder="100"
+                type="number"
+                min="0"
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>AVG COST *</div>
+              <input
+                style={inputStyle}
+                value={form.avgCost}
+                onChange={e => setForm(f => ({ ...f, avgCost: e.target.value }))}
+                placeholder="18.42"
+                type="number"
+                min="0"
+                step="0.01"
+              />
+            </div>
+          </div>
+          {formError && (
+            <div style={{ fontSize: 11, color: "#ff4466", fontFamily: "'Space Mono', monospace", marginBottom: 8 }}>
+              ⚠ {formError}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={submitForm} style={{
+              background: "rgba(0,255,136,0.15)", border: "1px solid rgba(0,255,136,0.3)",
+              color: "#00ff88", padding: "6px 16px", borderRadius: 4, cursor: "pointer",
+              fontSize: 11, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
+            }}>
+              {editingId ? "SAVE" : "ADD"}
+            </button>
+            <button onClick={closeForm} style={{
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+              color: "#666", padding: "6px 16px", borderRadius: 4, cursor: "pointer",
+              fontSize: 11, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
+            }}>
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Table header + Add button */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 6 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 0.7fr 0.9fr 0.9fr 1fr 0.6fr 0.5fr", gap: 8, flex: 1 }}>
+          {["Position", "Price", "Value", "Cost", "P&L", "Alloc", ""].map((h, i) => (
+            <span key={i} style={{ fontSize: 9, color: "#444", letterSpacing: 1, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>{h}</span>
+          ))}
+        </div>
+        {!showForm && (
+          <button onClick={openAdd} style={{
+            background: "rgba(0,255,136,0.1)", border: "1px solid rgba(0,255,136,0.25)",
+            color: "#00ff88", padding: "4px 12px", borderRadius: 4, cursor: "pointer",
+            fontSize: 10, fontFamily: "'Space Mono', monospace", letterSpacing: 1, flexShrink: 0, marginLeft: 8,
+          }}>
+            + ADD
+          </button>
+        )}
+      </div>
+
+      {/* Position rows */}
+      {rows.map(row => {
+        const isGain = row.unrealizedPnL >= 0;
+        const c = pnlColor(row.unrealizedPnL);
+        return (
+          <div key={row.id} style={{
+            display: "grid", gridTemplateColumns: "1fr 0.7fr 0.9fr 0.9fr 1fr 0.6fr 0.5fr",
+            gap: 8, padding: "10px 10px",
+            background: isGain ? "rgba(0,255,136,0.02)" : "rgba(255,68,102,0.02)",
+            border: `1px solid ${isGain ? "rgba(0,255,136,0.08)" : "rgba(255,68,102,0.08)"}`,
+            borderRadius: 6, alignItems: "center",
+            borderLeft: `3px solid ${c}`,
+          }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{row.id}</div>
+              <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{row.shares} shares</div>
+            </div>
+            <div style={{ fontSize: 12, color: "#ccc", fontFamily: "'Space Mono', monospace" }}>
+              ${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.currentValue)}</div>
+            <div style={{ fontSize: 12, color: "#666", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.costBasis)}</div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: c, fontFamily: "'Space Mono', monospace" }}>
+                {row.unrealizedPnL >= 0 ? "+" : "-"}{fmt$(row.unrealizedPnL)}
+              </div>
+              <div style={{ fontSize: 10, color: c, opacity: 0.8, fontFamily: "'Space Mono', monospace" }}>{fmtPct(row.unrealizedPct)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "#888", fontFamily: "'Space Mono', monospace", marginBottom: 3 }}>{row.allocation.toFixed(1)}%</div>
+              <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2 }}>
+                <div style={{ height: "100%", width: `${Math.min(row.allocation, 100)}%`, background: c, borderRadius: 2, transition: "width 0.8s ease" }} />
+              </div>
+            </div>
+            {/* Edit / Delete buttons */}
+            <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+              <button onClick={() => openEdit(positions.find(p => p.id === row.id))} style={{
+                background: "none", border: "1px solid rgba(255,255,255,0.1)",
+                color: "#666", borderRadius: 3, padding: "2px 6px", cursor: "pointer",
+                fontSize: 10, fontFamily: "'Space Mono', monospace",
+              }} title="Edit">✎</button>
+              <button onClick={() => deletePosition(row.id)} style={{
+                background: "none", border: "1px solid rgba(255,68,102,0.2)",
+                color: "#ff4466", borderRadius: 3, padding: "2px 6px", cursor: "pointer",
+                fontSize: 10,
+              }} title="Remove">×</button>
+            </div>
+          </div>
+        );
+      })}
+
+      {positions.length === 0 && (
+        <div style={{ textAlign: "center", padding: "32px 0", color: "#444", fontFamily: "'Space Mono', monospace", fontSize: 11 }}>
+          No positions yet. Click + ADD to get started.
+        </div>
+      )}
+
+      <div style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace", padding: "2px 4px" }}>
+        * Positions saved to browser. BTC/ETH use live prices. Other tickers use mock prices until FMP equity is enabled.
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────
 // PRIVATE CREDIT PANEL
 // ─────────────────────────────────────────────
 
@@ -1268,6 +1622,7 @@ export default function MarketMonitor() {
   const [centerTab, setCenterTab] = useState("market");
   const [riskMode, setRiskMode] = useState("on");
   const [showSidebar, setShowSidebar] = useState(true);
+  const [debugMode, setDebugMode] = useState(false);
   const alertsFeedRef = useRef(null);
 
   const isMarketOpen = () => getMarketStatus().isOpen;
@@ -1371,6 +1726,18 @@ export default function MarketMonitor() {
             {isPaused ? "▶" : "⏸"}
           </button>
           <button
+            onClick={() => setDebugMode(d => !d)}
+            title="Toggle debug mode"
+            style={{
+              background: debugMode ? "rgba(0,170,255,0.15)" : "rgba(255,255,255,0.03)",
+              border: `1px solid ${debugMode ? "rgba(0,170,255,0.4)" : "rgba(255,255,255,0.12)"}`,
+              color: debugMode ? "#00aaff" : "#555",
+              padding: "4px 10px", borderRadius: 4, cursor: "pointer",
+              fontSize: 9, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
+            }}>
+            DEBUG
+          </button>
+          <button
             onClick={() => setShowSidebar(s => !s)}
             title="Toggle news/social panel"
             style={{
@@ -1445,7 +1812,7 @@ export default function MarketMonitor() {
                   {group.label}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  {groupAssets.map(asset => <AssetCard key={asset.id} asset={asset} />)}
+                  {groupAssets.map(asset => <AssetCard key={asset.id} asset={asset} debugMode={debugMode} />)}
                 </div>
               </div>
             );
@@ -1458,8 +1825,9 @@ export default function MarketMonitor() {
           {/* Center tab bar */}
           <div style={{ display: "flex", gap: 4, borderBottom: "1px solid rgba(255,255,255,0.06)", marginBottom: 4 }}>
             {[
-              { id: "market",  label: "Markets" },
-              { id: "credit",  label: "Private Credit" },
+              { id: "market",    label: "Markets" },
+              { id: "credit",    label: "Private Credit" },
+              { id: "portfolio", label: "Portfolio" },
             ].map(t => (
               <button key={t.id}
                 onClick={() => setCenterTab(t.id)}
@@ -1478,6 +1846,9 @@ export default function MarketMonitor() {
 
           {/* PRIVATE CREDIT TAB */}
           {centerTab === "credit" && <PrivateCreditPanel />}
+
+          {/* PORTFOLIO TAB */}
+          {centerTab === "portfolio" && <PortfolioPanel assets={assets} />}
 
           {/* MARKETS TAB */}
           {centerTab === "market" && (<>

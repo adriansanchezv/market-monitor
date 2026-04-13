@@ -23,6 +23,90 @@ const ALERT_COOLDOWNS = {
 };
 
 // ─────────────────────────────────────────────
+// TRADE JOURNAL SNAPSHOT
+// ─────────────────────────────────────────────
+
+const JOURNAL_KEY    = "trade_journal_snapshots";
+const JOURNAL_MAX    = 50; // keep last 50 entries
+
+/**
+ * captureSnapshot({ assets, regime, lagSignals })
+ * Pure function — builds a complete market conditions object.
+ * Caller stores the result; no side effects here.
+ */
+function captureSnapshot({ assets, regime, lagSignals = [] }) {
+  const btc = assets.find(a => a.id === "BTC");
+  const spy = assets.find(a => a.id === "SPY");
+  const vix = assets.find(a => a.id === "VIX");
+  const eth = assets.find(a => a.id === "ETH");
+  const wti = assets.find(a => a.id === "WTI");
+  const gold= assets.find(a => a.id === "GOLD");
+
+  const leverageRisk = calculateLeverageRisk({
+    btcChange:    btc?.change    ?? 0,
+    btcSparkline: btc?.sparkline ?? [],
+    vixPrice:     vix?.price     ?? 15,
+  });
+
+  const setup = detectSetup({
+    regime,
+    btcChange:  btc?.change  ?? 0,
+    vixPrice:   vix?.price   ?? 15,
+    vixChange:  vix?.change  ?? 0,
+    lagSignals: lagSignals.map(s => s.signal ?? s),
+  });
+
+  const anyLag = lagSignals.find(s => (s.signal?.status ?? s.status) !== "IN_SYNC");
+
+  return {
+    id:        `snap_${Date.now()}`,
+    timestamp:  new Date().toISOString(),
+    regime,
+    prices: {
+      BTC:  btc?.price,  SPY:  spy?.price,
+      VIX:  vix?.price,  ETH:  eth?.price,
+      WTI:  wti?.price,  GOLD: gold?.price,
+    },
+    changes: {
+      BTC:  btc?.change, SPY:  spy?.change,
+      VIX:  vix?.change, ETH:  eth?.change,
+    },
+    leverageRisk: {
+      level: leverageRisk.level,
+      score: leverageRisk.score,
+    },
+    setup: setup.type ? {
+      type:       setup.type,
+      confidence: setup.confidence,
+      message:    setup.message,
+    } : null,
+    lagSignal: anyLag ? {
+      asset:  anyLag.id,
+      status: anyLag.signal?.status ?? anyLag.status,
+    } : null,
+    notes: "",   // user can add notes later (future feature)
+  };
+}
+
+function loadJournal() {
+  try {
+    return JSON.parse(localStorage.getItem(JOURNAL_KEY) || "[]");
+  } catch { return []; }
+}
+
+function saveJournal(entries) {
+  try {
+    localStorage.setItem(JOURNAL_KEY, JSON.stringify(entries.slice(0, JOURNAL_MAX)));
+  } catch {}
+}
+
+function addJournalEntry(snapshot) {
+  const entries = [snapshot, ...loadJournal()];
+  saveJournal(entries);
+  return entries;
+}
+
+// ─────────────────────────────────────────────
 // MARKET REGIME ENGINE
 // ─────────────────────────────────────────────
 
@@ -2836,6 +2920,152 @@ const StockMomentumPanel = memo(() => {
   );
 });
 
+// ─────────────────────────────────────────────
+// TRADE JOURNAL PANEL
+// ─────────────────────────────────────────────
+const TradeJournalPanel = memo(({ entries, onDelete }) => {
+  const [expanded, setExpanded] = useState(null);
+
+  const fmt$ = (n) => n != null ? `$${Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—";
+  const fmtPct = (n) => n != null ? `${n >= 0 ? "+" : ""}${Number(n).toFixed(2)}%` : "—";
+  const fmtTime = (iso) => {
+    const d = new Date(iso);
+    return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+  };
+
+  const REGIME_COLOR = { "RISK ON": "#00ff88", "NEUTRAL": "#ffd700", "RISK OFF": "#ff4466" };
+  const RISK_COLOR   = { LOW: "#00ff88", MEDIUM: "#ffd700", HIGH: "#ff4466" };
+  const SETUP_COLOR  = { LONG: "#00ff88", SHORT: "#ff4466" };
+
+  if (entries.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: "32px 0", color: "#333", fontFamily: "'Space Mono', monospace", fontSize: 11 }}>
+        No snapshots yet. Click LOG TRADE in the top bar.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {entries.map((snap) => {
+        const isOpen   = expanded === snap.id;
+        const rc       = REGIME_COLOR[snap.regime]  ?? "#666";
+        const rlColor  = RISK_COLOR[snap.leverageRisk?.level] ?? "#666";
+        const sc       = snap.setup ? SETUP_COLOR[snap.setup.type] ?? "#aaa" : null;
+
+        return (
+          <div key={snap.id} style={{
+            border: "1px solid rgba(255,255,255,0.07)", borderRadius: 7,
+            background: "rgba(255,255,255,0.02)", overflow: "hidden",
+          }}>
+            {/* Row header — always visible, click to expand */}
+            <div
+              onClick={() => setExpanded(isOpen ? null : snap.id)}
+              style={{
+                display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.6fr 0.7fr auto",
+                gap: 8, padding: "9px 12px", cursor: "pointer", alignItems: "center",
+              }}
+            >
+              {/* Timestamp */}
+              <span style={{ fontSize: 10, color: "#888", fontFamily: "'Space Mono', monospace" }}>
+                {fmtTime(snap.timestamp)}
+              </span>
+
+              {/* Regime */}
+              <span style={{ fontSize: 10, fontWeight: 700, color: rc, fontFamily: "'Space Mono', monospace" }}>
+                {snap.regime}
+              </span>
+
+              {/* Leverage risk */}
+              <span style={{ fontSize: 10, color: rlColor, fontFamily: "'Space Mono', monospace" }}>
+                {snap.leverageRisk?.level ?? "—"}
+              </span>
+
+              {/* Setup */}
+              <span style={{
+                fontSize: 10, fontWeight: 700,
+                color: sc ?? "#444", fontFamily: "'Space Mono', monospace",
+              }}>
+                {snap.setup ? `${snap.setup.type} ${snap.setup.confidence}` : "NO SETUP"}
+              </span>
+
+              {/* Expand + delete */}
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ fontSize: 9, color: "#444", fontFamily: "'Space Mono', monospace" }}>
+                  {isOpen ? "▲" : "▼"}
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onDelete(snap.id); }}
+                  style={{
+                    background: "none", border: "1px solid rgba(255,68,102,0.15)",
+                    color: "#ff4466", borderRadius: 3, padding: "1px 5px",
+                    cursor: "pointer", fontSize: 9,
+                  }} title="Delete"
+                >×</button>
+              </div>
+            </div>
+
+            {/* Expanded detail */}
+            {isOpen && (
+              <div style={{
+                borderTop: "1px solid rgba(255,255,255,0.06)",
+                padding: "10px 12px",
+                display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12,
+              }}>
+                {/* Prices at snapshot */}
+                <div>
+                  <div style={{ fontSize: 9, color: "#444", letterSpacing: 1, fontFamily: "'Space Mono', monospace", marginBottom: 6 }}>PRICES AT SNAPSHOT</div>
+                  {Object.entries(snap.prices).map(([id, price]) => (
+                    <div key={id} style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                      <span style={{ fontSize: 10, color: "#666", fontFamily: "'Space Mono', monospace" }}>{id}</span>
+                      <span style={{ fontSize: 10, color: "#ccc", fontFamily: "'Space Mono', monospace" }}>
+                        {fmt$(price)}
+                        {snap.changes?.[id] != null && (
+                          <span style={{ color: snap.changes[id] >= 0 ? "#00ff88" : "#ff4466", marginLeft: 6 }}>
+                            {fmtPct(snap.changes[id])}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Conditions */}
+                <div>
+                  <div style={{ fontSize: 9, color: "#444", letterSpacing: 1, fontFamily: "'Space Mono', monospace", marginBottom: 6 }}>CONDITIONS</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <div style={{ fontSize: 10, color: "#888", fontFamily: "'Space Mono', monospace" }}>
+                      <span style={{ color: "#555" }}>Regime: </span>
+                      <span style={{ color: rc }}>{snap.regime}</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#888", fontFamily: "'Space Mono', monospace" }}>
+                      <span style={{ color: "#555" }}>Lev. Risk: </span>
+                      <span style={{ color: rlColor }}>{snap.leverageRisk?.level} ({snap.leverageRisk?.score}/100)</span>
+                    </div>
+                    {snap.setup && (
+                      <div style={{ fontSize: 10, fontFamily: "'Space Mono', monospace" }}>
+                        <span style={{ color: "#555" }}>Setup: </span>
+                        <span style={{ color: sc }}>{snap.setup.type} · {snap.setup.confidence}</span>
+                        <div style={{ fontSize: 10, color: "#666", marginTop: 2 }}>{snap.setup.message}</div>
+                      </div>
+                    )}
+                    {snap.lagSignal && (
+                      <div style={{ fontSize: 10, color: "#888", fontFamily: "'Space Mono', monospace" }}>
+                        <span style={{ color: "#555" }}>Lag: </span>
+                        {snap.lagSignal.asset} {snap.lagSignal.status}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
 const BDC_DATA = [
   { ticker: "ARCC",   name: "Ares Capital",     price: 21.34, change: 0.42,  nav: 19.77, yield: 9.8,  nonAccrual: 1.2, manager: "Ares" },
   { ticker: "OBDC",   name: "Blue Owl Capital",  price: 15.62, change: -0.18, nav: 15.41, yield: 10.4, nonAccrual: 0.8, manager: "Blue Owl" },
@@ -3093,6 +3323,7 @@ export default function MarketMonitor() {
   const [riskMode, setRiskMode] = useState("on");
   const [showSidebar, setShowSidebar] = useState(true);
   const [debugMode, setDebugMode] = useState(false);
+  const [journal, setJournal] = useState(() => loadJournal());
   const alertsFeedRef = useRef(null);
 
   // Leveraged asset prices + lag signals — computed once, shared across panels
@@ -3294,6 +3525,22 @@ export default function MarketMonitor() {
             }}>
             RISK {riskMode.toUpperCase()}
           </button>
+          {/* LOG TRADE — captures full market snapshot to journal */}
+          <button
+            onClick={() => {
+              const snap    = captureSnapshot({ assets, regime: currentRegime, lagSignals });
+              const updated = addJournalEntry(snap);
+              setJournal(updated);
+              setCenterTab("journal");   // jump to journal tab after logging
+            }}
+            title="Log current market conditions as a trade snapshot"
+            style={{
+              background: "rgba(255,215,0,0.1)", border: "1px solid rgba(255,215,0,0.3)",
+              color: "#ffd700", padding: "4px 10px", borderRadius: 4, cursor: "pointer",
+              fontSize: 9, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
+            }}>
+            LOG TRADE
+          </button>
           <button
             onClick={() => setIsPaused(p => !p)}
             title={isPaused ? "Resume live data" : "Pause live data"}
@@ -3451,6 +3698,7 @@ export default function MarketMonitor() {
               { id: "stocks",    label: "Stocks" },
               { id: "credit",    label: "Private Credit" },
               { id: "portfolio", label: "Portfolio" },
+              { id: "journal",   label: `Journal${journal.length > 0 ? ` (${journal.length})` : ""}` },
             ].map(t => (
               <button key={t.id}
                 onClick={() => setCenterTab(t.id)}
@@ -3475,6 +3723,37 @@ export default function MarketMonitor() {
 
           {/* PORTFOLIO TAB */}
           {centerTab === "portfolio" && <PortfolioPanel assets={assets} />}
+
+          {/* JOURNAL TAB */}
+          {centerTab === "journal" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
+                  Trade Journal — {journal.length} snapshot{journal.length !== 1 ? "s" : ""}
+                </span>
+                {journal.length > 0 && (
+                  <button onClick={() => {
+                    if (window.confirm("Clear all journal entries?")) {
+                      saveJournal([]);
+                      setJournal([]);
+                    }
+                  }} style={{
+                    background: "none", border: "1px solid rgba(255,68,102,0.2)",
+                    color: "#ff4466", padding: "3px 10px", borderRadius: 4,
+                    cursor: "pointer", fontSize: 9, fontFamily: "'Space Mono', monospace",
+                  }}>CLEAR ALL</button>
+                )}
+              </div>
+              <TradeJournalPanel
+                entries={journal}
+                onDelete={(id) => {
+                  const updated = journal.filter(e => e.id !== id);
+                  saveJournal(updated);
+                  setJournal(updated);
+                }}
+              />
+            </div>
+          )}
 
           {/* MARKETS TAB */}
           {centerTab === "market" && (<>

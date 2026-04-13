@@ -1359,6 +1359,127 @@ const NewsReactionPanel = memo(({ assets }) => {
   );
 });
 
+// ─────────────────────────────────────────────
+// MOBILE HOOKS + COMPONENTS
+// ─────────────────────────────────────────────
+
+// Lightweight hook — only re-renders on threshold cross, not every resize
+const useIsMobile = (breakpoint = 768) => {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth <= breakpoint : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint}px)`);
+    const handler = (e) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [breakpoint]);
+  return isMobile;
+};
+
+// Collapsible section hook — one state key per section id
+const useCollapsible = (sections) => {
+  const [open, setOpen] = useState(() =>
+    Object.fromEntries(sections.map(s => [s, true]))
+  );
+  const toggle = (id) => setOpen(prev => ({ ...prev, [id]: !prev[id] }));
+  return { open, toggle };
+};
+
+/**
+ * MobileCoreSignalCard
+ * Large "above the fold" summary for mobile.
+ * Shows the 3 most important signals at a glance.
+ */
+const MobileCoreSignalCard = memo(({ assets, regime, lagSignals }) => {
+  const vix = assets.find(a => a.id === "VIX");
+  const btc = assets.find(a => a.id === "BTC");
+
+  const { level: riskLevel, score: riskScore } = calculateLeverageRisk({
+    btcChange:    btc?.change    ?? 0,
+    btcSparkline: btc?.sparkline ?? [],
+    vixPrice:     vix?.price     ?? 15,
+  });
+
+  const setup = detectSetup({
+    regime,
+    btcChange:  btc?.change  ?? 0,
+    vixPrice:   vix?.price   ?? 15,
+    vixChange:  vix?.change  ?? 0,
+    lagSignals: lagSignals.map(s => s.signal ?? s),
+  });
+
+  const REGIME_COLORS = {
+    "RISK ON":  { color: "#00ff88", bg: "rgba(0,255,136,0.07)",  border: "rgba(0,255,136,0.2)"  },
+    "NEUTRAL":  { color: "#ffd700", bg: "rgba(255,215,0,0.07)",  border: "rgba(255,215,0,0.2)"  },
+    "RISK OFF": { color: "#ff4466", bg: "rgba(255,68,102,0.07)", border: "rgba(255,68,102,0.2)" },
+  };
+  const RISK_COLORS = { LOW: "#00ff88", MEDIUM: "#ffd700", HIGH: "#ff4466" };
+
+  const cfg      = REGIME_COLORS[regime] ?? REGIME_COLORS["NEUTRAL"];
+  const riskColor= RISK_COLORS[riskLevel];
+  const setupColor = setup.type === "LONG" ? "#00ff88" : setup.type === "SHORT" ? "#ff4466" : null;
+
+  return (
+    <div style={{
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      borderRadius: 12, padding: "14px 16px", marginBottom: 4,
+    }}>
+      {/* Row 1 — Regime (largest) */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 9, color: "#555", letterSpacing: 2, fontFamily: "'Space Mono', monospace", marginBottom: 3 }}>MARKET REGIME</div>
+          <div className="mobile-regime-label" style={{ fontSize: 26, fontWeight: 900, color: cfg.color, fontFamily: "'Space Mono', monospace", letterSpacing: 1, lineHeight: 1 }}>
+            {regime}
+          </div>
+        </div>
+        {/* VIX pill */}
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 3 }}>VIX</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: (vix?.price ?? 0) > 25 ? "#ff4466" : (vix?.price ?? 0) > 18 ? "#ffd700" : "#00ff88", fontFamily: "'Space Mono', monospace" }}>
+            {vix?.price?.toFixed(1) ?? "—"}
+          </div>
+        </div>
+      </div>
+
+      {/* Row 2 — Leverage Risk + Setup side by side */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "8px 10px" }}>
+          <div style={{ fontSize: 8, color: "#555", letterSpacing: 1.5, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>LEV. RISK</div>
+          <div className="mobile-risk-label" style={{ fontSize: 18, fontWeight: 800, color: riskColor, fontFamily: "'Space Mono', monospace" }}>
+            {riskLevel}
+          </div>
+          <div style={{ marginTop: 6, height: 4, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{
+              height: "100%", width: `${riskScore}%`,
+              background: riskColor, borderRadius: 2,
+              transition: "width 1s ease",
+            }} />
+          </div>
+        </div>
+
+        <div style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "8px 10px" }}>
+          <div style={{ fontSize: 8, color: "#555", letterSpacing: 1.5, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>SETUP</div>
+          {setup.type ? (
+            <>
+              <div style={{ fontSize: 18, fontWeight: 800, color: setupColor, fontFamily: "'Space Mono', monospace" }}>
+                {setup.type === "LONG" ? "▲ LONG" : "▼ SHORT"}
+              </div>
+              <div style={{ fontSize: 9, color: setupColor, fontFamily: "'Space Mono', monospace", marginTop: 2 }}>
+                {setup.confidence} CONF
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 13, color: "#444", fontFamily: "'Space Mono', monospace", marginTop: 4 }}>
+              NO SETUP
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 const SentimentGauge = ({ assets }) => {
   const score = assets.reduce((acc, a) => {
     const weight = a.id === "VIX" ? -2 : a.id === "BTC" || a.id === "SPY" ? 2 : 1;
@@ -3326,6 +3447,12 @@ export default function MarketMonitor() {
   const [journal, setJournal] = useState(() => loadJournal());
   const alertsFeedRef = useRef(null);
 
+  // Mobile detection + collapsible section state
+  const isMobile = useIsMobile(768);
+  const { open: sectionOpen, toggle: toggleSection } = useCollapsible(
+    ["signals", "heatmap", "chart", "quicklinks"]
+  );
+
   // Leveraged asset prices + lag signals — computed once, shared across panels
   const { prices: leveragedPrices, loading: leveragedLoading } = useLeveragedAssets();
   const btcChangeForLag = assets.find(a => a.id === "BTC")?.change ?? 0;
@@ -3368,13 +3495,14 @@ export default function MarketMonitor() {
         /* ── MOBILE LAYOUT (≤768px) ───────────────────────────── */
         @media (max-width: 768px) {
 
-          /* Top bar — compact single row */
+          /* Top bar — compact, keep only essentials */
           .topbar-logo-subtitle { display: none !important; }
-          .topbar-ticker { display: none !important; }
-          .topbar-debug { display: none !important; }
-          .topbar-clock-detail { display: none !important; }
+          .topbar-ticker        { display: none !important; }
+          .topbar-debug         { display: none !important; }
+          .topbar-clock-detail  { display: none !important; }
+          header { height: 48px !important; padding: 0 12px !important; }
 
-          /* Main grid → single column stack */
+          /* Main grid → single column full-height scroll */
           .main-grid {
             display: flex !important;
             flex-direction: column !important;
@@ -3382,13 +3510,14 @@ export default function MarketMonitor() {
             height: auto !important;
           }
 
-          /* Left panel → horizontal scrolling asset strip */
+          /* Left panel → horizontal scroll strip, compact */
           .left-panel {
-            padding: 8px !important;
+            padding: 10px 10px 6px !important;
             overflow-x: auto !important;
             overflow-y: hidden !important;
             max-height: none !important;
             border-bottom: 1px solid rgba(255,255,255,0.07) !important;
+            flex-shrink: 0 !important;
           }
           .left-panel-headers { display: none !important; }
           .asset-grid {
@@ -3397,72 +3526,92 @@ export default function MarketMonitor() {
             padding-bottom: 4px !important;
           }
           .asset-card {
-            min-width: 130px !important;
+            min-width: 138px !important;
             flex-shrink: 0 !important;
+            padding: 10px 12px !important;
           }
 
-          /* Center panel — full width, scrollable */
+          /* Center panel — full width, comfortable padding */
           .center-panel {
             overflow-y: auto !important;
             min-height: 0 !important;
-            padding: 10px !important;
+            padding: 12px !important;
+            flex: 1 !important;
           }
 
-          /* Right sidebar → fixed drawer from bottom */
+          /* Center tab bar — scrollable row, bigger tap targets */
+          .tab-btn {
+            padding: 10px 14px !important;
+            font-size: 10px !important;
+            white-space: nowrap !important;
+          }
+
+          /* Right sidebar → bottom drawer */
           .right-sidebar {
             position: fixed !important;
-            bottom: 0 !important;
-            left: 0 !important;
-            right: 0 !important;
+            bottom: 0 !important; left: 0 !important; right: 0 !important;
             top: auto !important;
-            height: 70vh !important;
+            height: 72vh !important;
             z-index: 200 !important;
             border-top: 1px solid rgba(255,255,255,0.12) !important;
-            border-radius: 12px 12px 0 0 !important;
+            border-radius: 16px 16px 0 0 !important;
             animation: slideUp 0.25s ease !important;
             overflow-y: auto !important;
           }
 
-          /* Alerts bar → compact */
+          /* Alerts bar → compact strip */
           .alerts-bar {
-            max-height: 100px !important;
+            max-height: 90px !important;
             font-size: 11px !important;
           }
 
-          /* Charts — slightly shorter */
-          .recharts-wrapper { max-height: 140px !important; }
-
-          /* Stats grid → 2 columns */
-          .stats-grid { grid-template-columns: 1fr 1fr !important; }
+          /* Charts — shorter on mobile */
+          .recharts-wrapper { max-height: 130px !important; }
 
           /* Heatmap → 2 columns */
           .heatmap-grid { grid-template-columns: repeat(2, 1fr) !important; }
 
-          /* Portfolio grid → simplified */
-          .portfolio-row {
-            grid-template-columns: 1fr 0.8fr 0.8fr 0.8fr !important;
+          /* Portfolio → drop cost + alloc columns */
+          .portfolio-row       { grid-template-columns: 1fr 0.8fr 0.8fr 0.8fr !important; }
+          .portfolio-col-hide  { display: none !important; }
+
+          /* Notification toasts → full width */
+          .toast-container { left: 10px !important; right: 10px !important; top: 56px !important; }
+
+          /* ALL buttons — minimum 44px tap target (Apple HIG) */
+          button { min-height: 44px !important; }
+
+          /* Regime card / setup card — larger text on mobile */
+          .mobile-regime-label { font-size: 26px !important; }
+          .mobile-risk-label   { font-size: 18px !important; }
+
+          /* Collapsible sections */
+          .mobile-collapsible-hidden { display: none !important; }
+          .mobile-collapsible-toggle {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            padding: 12px 14px !important;
+            min-height: 44px !important;
+            cursor: pointer !important;
+            border-radius: 8px !important;
+            background: rgba(255,255,255,0.03) !important;
+            border: 1px solid rgba(255,255,255,0.07) !important;
+            color: #666 !important;
+            font-size: 10px !important;
+            letter-spacing: 1.5px !important;
+            text-transform: uppercase !important;
+            font-family: 'Space Mono', monospace !important;
+            margin-bottom: 4px !important;
           }
-          .portfolio-col-hide { display: none !important; }
-
-          /* Notification toasts — full width on mobile */
-          .toast-container {
-            left: 8px !important;
-            right: 8px !important;
-            top: 60px !important;
-          }
-
-          /* Tab buttons — larger tap targets */
-          .tab-btn { padding: 8px 12px !important; font-size: 10px !important; }
-
-          /* Bigger tap targets for all buttons */
-          button { min-height: 36px !important; }
         }
 
         /* ── SMALL MOBILE (≤480px) ────────────────────────────── */
         @media (max-width: 480px) {
-          .asset-card { min-width: 115px !important; }
-          .center-panel { padding: 8px !important; }
-          .topbar-risk { font-size: 9px !important; padding: 4px 8px !important; }
+          .asset-card          { min-width: 118px !important; }
+          .center-panel        { padding: 8px !important; }
+          .topbar-risk         { font-size: 9px !important; padding: 4px 8px !important; }
+          .mobile-regime-label { font-size: 22px !important; }
         }
       `}</style>
 
@@ -3758,6 +3907,62 @@ export default function MarketMonitor() {
           {/* MARKETS TAB */}
           {centerTab === "market" && (<>
 
+          {/* ── MOBILE-FIRST LAYOUT ────────────────────────────── */}
+          {isMobile ? (<>
+
+            {/* A) Core Signal Card — "above the fold" on mobile */}
+            <MobileCoreSignalCard
+              assets={assets}
+              regime={currentRegime}
+              lagSignals={lagSignals}
+            />
+
+            {/* B) Regime card (collapsed detail) */}
+            <MarketRegimeCard assets={assets} onRegimeChange={setRiskMode} />
+
+            {/* C) Setup Detector */}
+            <SetupDetectorPanel assets={assets} regime={currentRegime} lagSignals={lagSignals.map(s => s.signal)} />
+
+            {/* D) Quick Signals — collapsible */}
+            <div>
+              <div className="mobile-collapsible-toggle" onClick={() => toggleSection("signals")}>
+                <span>Quick Signals</span>
+                <span>{sectionOpen.signals ? "▲ HIDE" : "▼ SHOW"}</span>
+              </div>
+              {sectionOpen.signals && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <LeverageRiskGauge assets={assets} />
+                  <BtcLeadLagPanel assets={assets} signals={lagSignals} loading={leveragedLoading} />
+                  <NewsReactionPanel assets={assets} />
+                </div>
+              )}
+            </div>
+
+            {/* E) Heatmap — collapsible */}
+            <div>
+              <div className="mobile-collapsible-toggle" onClick={() => toggleSection("heatmap")}>
+                <span>Asset Heatmap</span>
+                <span>{sectionOpen.heatmap ? "▲ HIDE" : "▼ SHOW"}</span>
+              </div>
+              {sectionOpen.heatmap && <Heatmap assets={assets} />}
+            </div>
+
+            {/* F) Sentiment + Aggregate — collapsible */}
+            <div>
+              <div className="mobile-collapsible-toggle" onClick={() => toggleSection("chart")}>
+                <span>Sentiment & Chart</span>
+                <span>{sectionOpen.chart ? "▲ HIDE" : "▼ SHOW"}</span>
+              </div>
+              {sectionOpen.chart && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <SentimentGauge assets={assets} /></div>
+              )}
+            </div>
+
+          </>) : (<>
+
+          {/* ── DESKTOP LAYOUT (unchanged) ─────────────────────── */}
+
           {/* Market Regime Engine — replaces old summary banner */}
           <MarketRegimeCard assets={assets} onRegimeChange={setRiskMode} />
 
@@ -3912,6 +4117,8 @@ export default function MarketMonitor() {
               </div>
             );
           })()}
+          </>)}
+          {/* END desktop layout branch */}
           </>)}
         </div>
         {showSidebar && (

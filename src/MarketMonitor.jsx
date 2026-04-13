@@ -1932,8 +1932,154 @@ const PortfolioPanel = ({ assets }) => {
 };
 
 // ─────────────────────────────────────────────
-// PRIVATE CREDIT PANEL
+// LEVERAGE RISK ENGINE
 // ─────────────────────────────────────────────
+
+/**
+ * calculateLeverageRisk({ btcChange, btcSparkline, vixPrice })
+ *
+ * Inputs:
+ *   btcChange    : BTC 24h % change (already in assets)
+ *   btcSparkline : array of { v, t } — last 24 price points
+ *   vixPrice     : current VIX level
+ *
+ * Volatility proxy: (max - min) / avg across sparkline points
+ * This approximates realized volatility without needing a separate API call.
+ *
+ * Returns: { level: "LOW"|"MEDIUM"|"HIGH", score: 0–100, reasons: string[] }
+ */
+function calculateLeverageRisk({ btcChange = 0, btcSparkline = [], vixPrice = 15 }) {
+  let score = 0;
+  const reasons = [];
+
+  // ── Component 1: BTC realized volatility from sparkline (0–40 pts) ──
+  // Uses price range / average as a normalized volatility proxy
+  let btcVolScore = 0;
+  if (btcSparkline.length >= 4) {
+    const prices = btcSparkline.map(p => p.v).filter(v => v > 0);
+    const hi  = Math.max(...prices);
+    const lo  = Math.min(...prices);
+    const avg = prices.reduce((s, v) => s + v, 0) / prices.length;
+    const rangePct = avg > 0 ? ((hi - lo) / avg) * 100 : 0;
+
+    // rangePct interpretation: <2% calm, 2–5% moderate, >5% elevated, >8% extreme
+    if (rangePct > 8)      { btcVolScore = 40; reasons.push(`BTC range ${rangePct.toFixed(1)}% (extreme)`); }
+    else if (rangePct > 5) { btcVolScore = 28; reasons.push(`BTC range ${rangePct.toFixed(1)}% (elevated)`); }
+    else if (rangePct > 2) { btcVolScore = 15; reasons.push(`BTC range ${rangePct.toFixed(1)}% (moderate)`); }
+    else                   { btcVolScore = 5;  }
+  }
+  score += btcVolScore;
+
+  // ── Component 2: BTC directional move magnitude (0–30 pts) ──
+  const absBtcChange = Math.abs(btcChange);
+  let btcMoveScore = 0;
+  if (absBtcChange > 8)      { btcMoveScore = 30; reasons.push(`BTC ${btcChange > 0 ? "+" : ""}${btcChange.toFixed(1)}% move`); }
+  else if (absBtcChange > 4) { btcMoveScore = 18; reasons.push(`BTC ${btcChange > 0 ? "+" : ""}${btcChange.toFixed(1)}% move`); }
+  else if (absBtcChange > 2) { btcMoveScore = 10; }
+  else                       { btcMoveScore = 3;  }
+  score += btcMoveScore;
+
+  // ── Component 3: VIX level (0–30 pts) ──
+  let vixScore = 0;
+  if (vixPrice > 30)      { vixScore = 30; reasons.push(`VIX ${vixPrice.toFixed(1)} (extreme fear)`); }
+  else if (vixPrice > 25) { vixScore = 22; reasons.push(`VIX ${vixPrice.toFixed(1)} (elevated)`); }
+  else if (vixPrice > 18) { vixScore = 12; reasons.push(`VIX ${vixPrice.toFixed(1)} (cautious)`); }
+  else                    { vixScore = 3;  }
+  score += vixScore;
+
+  // Clamp to 0–100
+  score = Math.min(100, Math.max(0, Math.round(score)));
+
+  // Classify
+  let level;
+  if (score >= 60)      level = "HIGH";
+  else if (score >= 30) level = "MEDIUM";
+  else                  level = "LOW";
+
+  return { level, score, reasons };
+}
+
+// ─────────────────────────────────────────────
+// LEVERAGE RISK GAUGE component
+// ─────────────────────────────────────────────
+const RISK_COLORS = {
+  LOW:    { bar: "#00ff88", text: "#00ff88", bg: "rgba(0,255,136,0.06)",  border: "rgba(0,255,136,0.15)"  },
+  MEDIUM: { bar: "#ffd700", text: "#ffd700", bg: "rgba(255,215,0,0.06)",  border: "rgba(255,215,0,0.15)"  },
+  HIGH:   { bar: "#ff4466", text: "#ff4466", bg: "rgba(255,68,102,0.06)", border: "rgba(255,68,102,0.15)" },
+};
+
+const LeverageRiskGauge = memo(({ assets }) => {
+  const btc = assets.find(a => a.id === "BTC");
+  const vix = assets.find(a => a.id === "VIX");
+
+  const { level, score, reasons } = calculateLeverageRisk({
+    btcChange:    btc?.change      ?? 0,
+    btcSparkline: btc?.sparkline   ?? [],
+    vixPrice:     vix?.price       ?? 15,
+  });
+
+  const cfg = RISK_COLORS[level];
+
+  return (
+    <div style={{
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      borderRadius: 8, padding: "12px 14px",
+    }}>
+      {/* Header row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
+          Leverage Risk
+        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Score number */}
+          <span style={{ fontSize: 11, color: "#444", fontFamily: "'Space Mono', monospace" }}>{score}/100</span>
+          {/* Level badge */}
+          <span style={{
+            fontSize: 11, fontWeight: 800, color: cfg.text,
+            fontFamily: "'Space Mono', monospace", letterSpacing: 2,
+          }}>{level}</span>
+        </div>
+      </div>
+
+      {/* Animated bar */}
+      <div style={{ height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden", marginBottom: 8 }}>
+        <div style={{
+          height: "100%",
+          width: `${score}%`,
+          background: score >= 60
+            ? `linear-gradient(90deg, #ffd700, #ff4466)`
+            : score >= 30
+            ? `linear-gradient(90deg, #00ff88, #ffd700)`
+            : cfg.bar,
+          borderRadius: 3,
+          transition: "width 1.2s cubic-bezier(0.4, 0, 0.2, 1)",
+          boxShadow: `0 0 8px ${cfg.bar}66`,
+        }} />
+      </div>
+
+      {/* Tick marks */}
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+        {["LOW", "", "MEDIUM", "", "HIGH"].map((t, i) => (
+          <span key={i} style={{ fontSize: 7, color: "#333", fontFamily: "'Space Mono', monospace" }}>{t}</span>
+        ))}
+      </div>
+
+      {/* Reason pills — only show when not LOW */}
+      {reasons.length > 0 && (
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {reasons.map((r, i) => (
+            <span key={i} style={{
+              fontSize: 9, padding: "1px 6px", borderRadius: 2,
+              background: `${cfg.bar}18`, color: cfg.text,
+              fontFamily: "'Space Mono', monospace",
+              border: `1px solid ${cfg.bar}33`,
+            }}>{r}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
 
 const BDC_DATA = [
   { ticker: "ARCC",   name: "Ares Capital",     price: 21.34, change: 0.42,  nav: 19.77, yield: 9.8,  nonAccrual: 1.2, manager: "Ares" },
@@ -2567,6 +2713,9 @@ export default function MarketMonitor() {
 
           {/* Market Regime Engine — replaces old summary banner */}
           <MarketRegimeCard assets={assets} onRegimeChange={setRiskMode} />
+
+          {/* Leverage Risk Gauge */}
+          <LeverageRiskGauge assets={assets} />
 
           {/* Sentiment + Aggregate Signal */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>

@@ -2113,6 +2113,71 @@ function detectLeadLag(btcChange, assetChange) {
   return { status, strength };
 }
 
+/**
+ * detectSetup({ regime, btcChange, vixPrice, vixChange, lagSignals })
+ *
+ * Identifies high-probability long or short setups by combining
+ * regime, BTC trend, VIX, and lead/lag signals.
+ *
+ * Confidence scoring:
+ *   +1 each condition met → LOW (1), MEDIUM (2), HIGH (3–4)
+ *
+ * Returns: { type: "LONG"|"SHORT"|null, confidence, conditions[], message }
+ */
+function detectSetup({ regime, btcChange = 0, vixPrice = 15, vixChange = 0, lagSignals = [] }) {
+  const btcTrendingUp   = btcChange > 1;
+  const btcTrendingDown = btcChange < -1;
+  const vixFallingOrLow = vixChange < 0 || vixPrice < 20;
+  const vixRisingOrHigh = vixChange > 5  || vixPrice > 20;
+  const vixExtreme      = vixPrice > 25;
+  const anyBullishLag   = lagSignals.some(s => s.status === "LAGGING_BULLISH");
+  const anyBearishLag   = lagSignals.some(s => s.status === "LAGGING_BEARISH");
+
+  // ── LONG setup ───────────────────────────────────────────────────
+  if (regime === "RISK ON" || regime === "NEUTRAL") {
+    const longConditions = [
+      { met: regime === "RISK ON",   label: `Regime: ${regime}`,          weight: 1 },
+      { met: btcTrendingUp,          label: `BTC +${btcChange.toFixed(1)}%`, weight: 1 },
+      { met: vixFallingOrLow,        label: `VIX ${vixPrice.toFixed(1)} (${vixChange < 0 ? "falling" : "low"})`, weight: 1 },
+      { met: anyBullishLag,          label: "Bullish lag detected",         weight: 1 },
+    ];
+    const score = longConditions.filter(c => c.met).length;
+    if (score >= 2) {
+      const confidence = score === 4 ? "HIGH" : score === 3 ? "HIGH" : "MEDIUM";
+      const met = longConditions.filter(c => c.met).map(c => c.label);
+      return {
+        type: "LONG",
+        confidence,
+        conditions: met,
+        message: `${confidence} probability long. ${met.slice(0, 2).join(" · ")}`,
+      };
+    }
+  }
+
+  // ── SHORT setup ───────────────────────────────────────────────────
+  if (regime === "RISK OFF" || regime === "NEUTRAL") {
+    const shortConditions = [
+      { met: regime === "RISK OFF",  label: `Regime: ${regime}`,           weight: 1 },
+      { met: btcTrendingDown,        label: `BTC ${btcChange.toFixed(1)}%`, weight: 1 },
+      { met: vixRisingOrHigh,        label: `VIX ${vixPrice.toFixed(1)} (${vixExtreme ? "extreme" : "rising"})`, weight: 1 },
+      { met: anyBearishLag,          label: "Bearish lag detected",          weight: 1 },
+    ];
+    const score = shortConditions.filter(c => c.met).length;
+    if (score >= 2) {
+      const confidence = score === 4 ? "HIGH" : score === 3 ? "HIGH" : "MEDIUM";
+      const met = shortConditions.filter(c => c.met).map(c => c.label);
+      return {
+        type: "SHORT",
+        confidence,
+        conditions: met,
+        message: `${confidence} probability short. ${met.slice(0, 2).join(" · ")}`,
+      };
+    }
+  }
+
+  return { type: null, confidence: null, conditions: [], message: "" };
+}
+
 // Tracked leveraged assets — fetched client-side via Yahoo (no backend changes)
 const LEVERAGED_ASSETS = [
   { id: "BMNR", label: "BitMine",   desc: "Bitcoin miner"          },
@@ -2166,18 +2231,10 @@ const LAG_CONFIG = {
   IN_SYNC:         { color: "#444",    bg: "transparent",           border: "transparent",           label: null    },
 };
 
-const BtcLeadLagPanel = memo(({ assets }) => {
-  const { prices, loading } = useLeveragedAssets();
+const BtcLeadLagPanel = memo(({ assets, signals = [], loading = false }) => {
   const btc = assets.find(a => a.id === "BTC");
   const btcChange = btc?.change ?? 0;
-
-  // Summary: any lagging signals?
-  const signals = LEVERAGED_ASSETS.map(a => {
-    const p = prices[a.id];
-    if (!p) return { ...a, change: null, signal: { status: "IN_SYNC", strength: null } };
-    return { ...a, price: p.price, change: p.change, signal: detectLeadLag(btcChange, p.change) };
-  });
-  const lagCount = signals.filter(s => s.signal.status !== "IN_SYNC").length;
+  const lagCount = signals.filter(s => s.signal?.status !== "IN_SYNC").length;
 
   return (
     <div style={{
@@ -2260,6 +2317,89 @@ const BtcLeadLagPanel = memo(({ assets }) => {
     </div>
   );
 });
+
+// ─────────────────────────────────────────────
+// SETUP DETECTOR PANEL
+// ─────────────────────────────────────────────
+const SETUP_CONFIG = {
+  LONG:  { color: "#00ff88", bg: "rgba(0,255,136,0.07)",  border: "rgba(0,255,136,0.2)",  glow: "#00ff88" },
+  SHORT: { color: "#ff4466", bg: "rgba(255,68,102,0.07)", border: "rgba(255,68,102,0.2)", glow: "#ff4466" },
+};
+
+const SetupDetectorPanel = memo(({ assets, regime, lagSignals }) => {
+  const btc = assets.find(a => a.id === "BTC");
+  const vix = assets.find(a => a.id === "VIX");
+
+  const setup = detectSetup({
+    regime,
+    btcChange: btc?.change  ?? 0,
+    vixPrice:  vix?.price   ?? 15,
+    vixChange: vix?.change  ?? 0,
+    lagSignals,
+  });
+
+  // Only render when there's an active setup
+  if (!setup.type) return null;
+
+  const cfg = SETUP_CONFIG[setup.type];
+  const confColor = setup.confidence === "HIGH" ? cfg.color : "#ffd700";
+
+  return (
+    <div style={{
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      borderRadius: 8, padding: "12px 14px",
+      boxShadow: `0 0 20px ${cfg.glow}18`,
+      animation: "fadeIn 0.4s ease",
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Pulse dot */}
+          <div style={{
+            width: 8, height: 8, borderRadius: "50%",
+            background: cfg.color, flexShrink: 0,
+            boxShadow: `0 0 10px ${cfg.glow}`,
+            animation: "pulse 1.5s infinite",
+          }} />
+          <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
+            Setup Detected
+          </span>
+        </div>
+        {/* Confidence */}
+        <span style={{ fontSize: 10, color: confColor, fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
+          {setup.confidence} CONF
+        </span>
+      </div>
+
+      {/* Type badge + message */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <span style={{
+          fontSize: 18, fontWeight: 800, color: cfg.color,
+          fontFamily: "'Space Mono', monospace", letterSpacing: 2,
+        }}>
+          {setup.type === "LONG" ? "▲ LONG" : "▼ SHORT"}
+        </span>
+        <span style={{ fontSize: 11, color: "#aaa", lineHeight: 1.4 }}>
+          {setup.message}
+        </span>
+      </div>
+
+      {/* Condition pills */}
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {setup.conditions.map((c, i) => (
+          <span key={i} style={{
+            fontSize: 9, padding: "2px 7px", borderRadius: 3,
+            background: `${cfg.color}18`, color: cfg.color,
+            fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+            border: `1px solid ${cfg.color}33`,
+          }}>{c}</span>
+        ))}
+      </div>
+    </div>
+  );
+});
+
+const BDC_DATA = [
   { ticker: "ARCC",   name: "Ares Capital",     price: 21.34, change: 0.42,  nav: 19.77, yield: 9.8,  nonAccrual: 1.2, manager: "Ares" },
   { ticker: "OBDC",   name: "Blue Owl Capital",  price: 15.62, change: -0.18, nav: 15.41, yield: 10.4, nonAccrual: 0.8, manager: "Blue Owl" },
   { ticker: "FSKKR",  name: "FS KKR Capital",    price: 19.88, change: -0.61, nav: 23.12, yield: 13.1, nonAccrual: 2.1, manager: "KKR" },
@@ -2517,6 +2657,15 @@ export default function MarketMonitor() {
   const [showSidebar, setShowSidebar] = useState(true);
   const [debugMode, setDebugMode] = useState(false);
   const alertsFeedRef = useRef(null);
+
+  // Leveraged asset prices + lag signals — computed once, shared across panels
+  const { prices: leveragedPrices, loading: leveragedLoading } = useLeveragedAssets();
+  const btcChangeForLag = assets.find(a => a.id === "BTC")?.change ?? 0;
+  const lagSignals = LEVERAGED_ASSETS.map(a => {
+    const p = leveragedPrices[a.id];
+    if (!p) return { ...a, change: null, signal: { status: "IN_SYNC", strength: null } };
+    return { ...a, price: p.price, change: p.change, signal: detectLeadLag(btcChangeForLag, p.change) };
+  });
 
   const isMarketOpen = () => getMarketStatus().isOpen;
 
@@ -2892,10 +3041,13 @@ export default function MarketMonitor() {
           {/* Market Regime Engine — replaces old summary banner */}
           <MarketRegimeCard assets={assets} onRegimeChange={setRiskMode} />
 
+          {/* Setup Detector — only renders when a setup exists */}
+          <SetupDetectorPanel assets={assets} regime={currentRegime} lagSignals={lagSignals.map(s => s.signal)} />
+
           {/* Leverage Risk + BTC Lead Lag — side by side */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <LeverageRiskGauge assets={assets} />
-            <BtcLeadLagPanel assets={assets} />
+            <BtcLeadLagPanel assets={assets} signals={lagSignals} loading={leveragedLoading} />
           </div>
 
           {/* Sentiment + Aggregate Signal */}

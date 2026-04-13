@@ -3601,8 +3601,9 @@ export default function MarketMonitor() {
   }, 0);
 
   return (
-    <div style={{
-      minHeight: "100vh", background: "#0a0a0f",
+    <div data-app-root style={{
+      minHeight: "100dvh",           /* dvh = dynamic viewport height — excludes mobile browser chrome */
+      background: "#0a0a0f",
       fontFamily: "'Outfit', sans-serif", color: "#f0f0f0",
       display: "flex", flexDirection: "column",
       userSelect: "none",
@@ -3617,7 +3618,7 @@ export default function MarketMonitor() {
         @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-        @keyframes scan { 0% { transform: translateY(-100%); } 100% { transform: translateY(100vh); } }
+        @keyframes scan { 0% { transform: translateY(-100%); } 100% { transform: translateY(100dvh); } }
         body { font-size: 14px; }
         .tab-btn { background: none; border: none; cursor: pointer; padding: 6px 14px; border-radius: 4px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; font-family: 'Space Mono', monospace; transition: all 0.2s; color: #888; }
         .tab-btn:hover { background: rgba(255,255,255,0.05); color: #ccc; }
@@ -3627,6 +3628,22 @@ export default function MarketMonitor() {
         /* ── MOBILE LAYOUT (≤768px) ───────────────────────────── */
         @media (max-width: 768px) {
 
+          /* ── Viewport + safe area ──────────────────────────────
+           * 100dvh = dynamic viewport height (excludes browser chrome on mobile)
+           * env(safe-area-inset-*) = notch / home indicator padding
+           * These two together ensure nothing is clipped on any device.
+           */
+          html, body {
+            height: 100%;
+            overscroll-behavior: none;   /* prevent rubber-band scroll */
+          }
+
+          /* Root app wrapper — single scroll container */
+          div[data-app-root] {
+            min-height: 100dvh !important;
+            min-height: -webkit-fill-available !important; /* Safari fallback */
+          }
+
           /* Top bar — compact, keep only essentials */
           .topbar-logo-subtitle { display: none !important; }
           .topbar-ticker        { display: none !important; }
@@ -3634,12 +3651,13 @@ export default function MarketMonitor() {
           .topbar-clock-detail  { display: none !important; }
           header { height: 48px !important; padding: 0 12px !important; }
 
-          /* Main grid → single column full-height scroll */
+          /* Main grid → single column, let root wrapper scroll */
           .main-grid {
             display: flex !important;
             flex-direction: column !important;
-            overflow-y: auto !important;
+            overflow-y: visible !important;
             height: auto !important;
+            flex: 1 !important;
           }
 
           /* Left panel → horizontal scroll strip, compact */
@@ -3663,11 +3681,12 @@ export default function MarketMonitor() {
             padding: 10px 12px !important;
           }
 
-          /* Center panel — full width, comfortable padding */
+          /* Center panel — visible overflow, safe area bottom */
           .center-panel {
-            overflow-y: auto !important;
+            overflow-y: visible !important;
             min-height: 0 !important;
             padding: 12px !important;
+            padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
             flex: 1 !important;
           }
 
@@ -3678,17 +3697,18 @@ export default function MarketMonitor() {
             white-space: nowrap !important;
           }
 
-          /* Right sidebar → bottom drawer */
+          /* Right sidebar → bottom drawer with home indicator clearance */
           .right-sidebar {
             position: fixed !important;
             bottom: 0 !important; left: 0 !important; right: 0 !important;
             top: auto !important;
-            height: 72vh !important;
+            height: 72dvh !important;
             z-index: 200 !important;
             border-top: 1px solid rgba(255,255,255,0.12) !important;
             border-radius: 16px 16px 0 0 !important;
             animation: slideUp 0.25s ease !important;
             overflow-y: auto !important;
+            padding-bottom: env(safe-area-inset-bottom, 0px) !important;
           }
 
           /* Alerts bar → compact strip */
@@ -3761,7 +3781,9 @@ export default function MarketMonitor() {
       {/* TOP BAR */}
       <header style={{
         height: 52, display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 20px", borderBottom: "1px solid rgba(255,255,255,0.07)",
+        padding: "0 20px",
+        paddingTop: "env(safe-area-inset-top, 0px)",      /* notch support */
+        borderBottom: "1px solid rgba(255,255,255,0.07)",
         background: "rgba(10,10,15,0.95)", backdropFilter: "blur(10px)",
         position: "sticky", top: 0, zIndex: 100, flexShrink: 0,
       }}>
@@ -4372,7 +4394,9 @@ export default function MarketMonitor() {
         <div className="alerts-bar" style={{
           gridColumn: "1 / -1", background: "#0a0a0f",
           borderTop: "1px solid rgba(255,255,255,0.07)",
-          padding: "8px 16px", maxHeight: 140, overflow: "hidden",
+          padding: "8px 16px",
+          paddingBottom: "calc(8px + env(safe-area-inset-bottom, 0px))",  /* home indicator */
+          maxHeight: 140, overflow: "hidden",
           display: "flex", flexDirection: "column",
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexShrink: 0 }}>

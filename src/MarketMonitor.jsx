@@ -23,6 +23,181 @@ const ALERT_COOLDOWNS = {
 };
 
 // ─────────────────────────────────────────────
+// MARKET REGIME ENGINE
+// ─────────────────────────────────────────────
+
+/**
+ * getMarketRegime(data) — pure function, no side effects
+ *
+ * Inputs:
+ *   vixPrice  : current VIX level
+ *   vixChange : VIX 24h % change
+ *   spyChange : SPY 24h % change
+ *   btcChange : BTC 24h % change
+ *
+ * Rules:
+ *   RISK ON  — VIX < 18 AND SPY rising AND BTC rising
+ *   RISK OFF — VIX > 25 OR (VIX rising sharply AND SPY falling)
+ *   NEUTRAL  — everything else
+ *
+ * Confidence:
+ *   HIGH   — all signals agree strongly
+ *   MEDIUM — majority of signals agree
+ *   LOW    — mixed signals
+ */
+function getMarketRegime({ vixPrice, vixChange, spyChange, btcChange }) {
+  // Guard: if data is missing, return neutral with low confidence
+  if (vixPrice == null || spyChange == null) {
+    return { regime: "NEUTRAL", confidence: "LOW", signals: [], reason: "Insufficient data" };
+  }
+
+  const signals = [];
+
+  // ── VIX signals ──────────────────────────────────────────────
+  if (vixPrice < 16)       signals.push({ name: "VIX",    direction: "RISK_ON",  weight: 2, detail: `VIX ${vixPrice} (very low)` });
+  else if (vixPrice < 20)  signals.push({ name: "VIX",    direction: "RISK_ON",  weight: 1, detail: `VIX ${vixPrice} (low)` });
+  else if (vixPrice > 30)  signals.push({ name: "VIX",    direction: "RISK_OFF", weight: 2, detail: `VIX ${vixPrice} (extreme fear)` });
+  else if (vixPrice > 25)  signals.push({ name: "VIX",    direction: "RISK_OFF", weight: 2, detail: `VIX ${vixPrice} (elevated)` });
+  else                     signals.push({ name: "VIX",    direction: "NEUTRAL",  weight: 1, detail: `VIX ${vixPrice} (neutral zone)` });
+
+  // VIX momentum — spike is an early warning
+  if (vixChange > 10)      signals.push({ name: "VIX MOM", direction: "RISK_OFF", weight: 1, detail: `VIX +${vixChange.toFixed(1)}% (spiking)` });
+  else if (vixChange < -5) signals.push({ name: "VIX MOM", direction: "RISK_ON",  weight: 1, detail: `VIX ${vixChange.toFixed(1)}% (falling)` });
+
+  // ── SPY signals ──────────────────────────────────────────────
+  if (spyChange > 1)       signals.push({ name: "SPY",    direction: "RISK_ON",  weight: 2, detail: `SPY +${spyChange.toFixed(2)}% (rising)` });
+  else if (spyChange > 0)  signals.push({ name: "SPY",    direction: "RISK_ON",  weight: 1, detail: `SPY +${spyChange.toFixed(2)}% (slightly up)` });
+  else if (spyChange < -1) signals.push({ name: "SPY",    direction: "RISK_OFF", weight: 2, detail: `SPY ${spyChange.toFixed(2)}% (falling)` });
+  else                     signals.push({ name: "SPY",    direction: "NEUTRAL",  weight: 1, detail: `SPY ${spyChange.toFixed(2)}% (flat)` });
+
+  // ── BTC signals (risk appetite proxy) ────────────────────────
+  if (btcChange != null) {
+    if (btcChange > 3)     signals.push({ name: "BTC",    direction: "RISK_ON",  weight: 1, detail: `BTC +${btcChange.toFixed(2)}% (leading)` });
+    else if (btcChange < -3) signals.push({ name: "BTC",  direction: "RISK_OFF", weight: 1, detail: `BTC ${btcChange.toFixed(2)}% (selling)` });
+  }
+
+  // ── Score signals ─────────────────────────────────────────────
+  let riskOnScore  = 0;
+  let riskOffScore = 0;
+  let totalWeight  = 0;
+
+  for (const s of signals) {
+    totalWeight += s.weight;
+    if (s.direction === "RISK_ON")  riskOnScore  += s.weight;
+    if (s.direction === "RISK_OFF") riskOffScore += s.weight;
+  }
+
+  // Hard override: extreme VIX always = RISK OFF
+  if (vixPrice > 30) {
+    return {
+      regime: "RISK OFF", confidence: "HIGH", signals,
+      reason: `VIX at ${vixPrice} — extreme fear`,
+    };
+  }
+
+  // Determine regime
+  let regime;
+  const riskOnPct  = totalWeight > 0 ? riskOnScore  / totalWeight : 0;
+  const riskOffPct = totalWeight > 0 ? riskOffScore / totalWeight : 0;
+
+  if (riskOnPct >= 0.55 && vixPrice < 20)       regime = "RISK ON";
+  else if (riskOffPct >= 0.55 || vixPrice > 25) regime = "RISK OFF";
+  else                                           regime = "NEUTRAL";
+
+  // Determine confidence
+  const dominance = Math.max(riskOnPct, riskOffPct);
+  const confidence = dominance >= 0.75 ? "HIGH" : dominance >= 0.55 ? "MEDIUM" : "LOW";
+
+  // Build reason string from top signals
+  const topSignals = signals
+    .filter(s => s.direction === regime.replace(" ", "_"))
+    .map(s => s.detail)
+    .slice(0, 2)
+    .join(". ");
+
+  return { regime, confidence, signals, reason: topSignals || "Mixed signals" };
+}
+
+// ─────────────────────────────────────────────
+// MARKET REGIME CARD component
+// ─────────────────────────────────────────────
+const REGIME_CONFIG = {
+  "RISK ON":  { color: "#00ff88", bg: "rgba(0,255,136,0.06)",  border: "rgba(0,255,136,0.2)",  glow: "#00ff88" },
+  "NEUTRAL":  { color: "#ffd700", bg: "rgba(255,215,0,0.06)",  border: "rgba(255,215,0,0.2)",  glow: "#ffd700" },
+  "RISK OFF": { color: "#ff4466", bg: "rgba(255,68,102,0.06)", border: "rgba(255,68,102,0.2)", glow: "#ff4466" },
+};
+
+const MarketRegimeCard = memo(({ assets, onRegimeChange }) => {
+  const spy = assets.find(a => a.id === "SPY");
+  const vix = assets.find(a => a.id === "VIX");
+  const btc = assets.find(a => a.id === "BTC");
+
+  const result = getMarketRegime({
+    vixPrice:  vix?.price  ?? null,
+    vixChange: vix?.change ?? null,
+    spyChange: spy?.change ?? null,
+    btcChange: btc?.change ?? null,
+  });
+
+  const cfg = REGIME_CONFIG[result.regime] ?? REGIME_CONFIG["NEUTRAL"];
+
+  // Sync riskMode toggle to regime — notify parent
+  useEffect(() => {
+    if (result.regime === "RISK ON")  onRegimeChange?.("on");
+    if (result.regime === "RISK OFF") onRegimeChange?.("off");
+  }, [result.regime]);
+
+  const confidenceColor = result.confidence === "HIGH" ? cfg.color : result.confidence === "MEDIUM" ? "#ffd700" : "#555";
+
+  return (
+    <div style={{
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      borderRadius: 8, padding: "14px 16px",
+      display: "flex", flexDirection: "column", gap: 10,
+    }}>
+      {/* Header row */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{
+            width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
+            background: cfg.color, boxShadow: `0 0 10px ${cfg.glow}`,
+            animation: result.regime === "RISK OFF" ? "pulse 1s infinite" : "none",
+          }} />
+          <div>
+            <div style={{ fontSize: 9, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>Market Regime</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: cfg.color, fontFamily: "'Space Mono', monospace", letterSpacing: 1, lineHeight: 1.2 }}>
+              {result.regime}
+            </div>
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 9, color: "#555", letterSpacing: 1, fontFamily: "'Space Mono', monospace" }}>CONFIDENCE</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: confidenceColor, fontFamily: "'Space Mono', monospace" }}>{result.confidence}</div>
+        </div>
+      </div>
+
+      {/* Reason */}
+      <div style={{ fontSize: 11, color: "#aaa", lineHeight: 1.5 }}>{result.reason}</div>
+
+      {/* Signal pills */}
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {result.signals.map((s, i) => {
+          const sc = s.direction === "RISK_ON" ? "#00ff88" : s.direction === "RISK_OFF" ? "#ff4466" : "#ffd700";
+          return (
+            <span key={i} style={{
+              fontSize: 9, padding: "2px 7px", borderRadius: 3,
+              background: `rgba(${sc === "#00ff88" ? "0,255,136" : sc === "#ff4466" ? "255,68,102" : "255,215,0"},0.1)`,
+              color: sc, border: `1px solid ${sc}33`,
+              fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+            }}>{s.name}: {s.direction.replace("_", " ")}</span>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
+// ─────────────────────────────────────────────
 // SOUND
 // ─────────────────────────────────────────────
 let _audioCtx = null;
@@ -1852,36 +2027,9 @@ export default function MarketMonitor() {
 
           {/* MARKETS TAB */}
           {centerTab === "market" && (<>
-          {(() => {
-            const vix = assets.find(a => a.id === "VIX");
-            const spy = assets.find(a => a.id === "SPY");
-            const btc = assets.find(a => a.id === "BTC");
-            const wti = assets.find(a => a.id === "WTI");
-            const upCount = assets.filter(a => a.change >= 0).length;
-            const isRiskOff = (vix?.change > 5) || (spy?.change < -1) || (upCount < 3);
-            const summary = isRiskOff
-              ? `Risk-off session. ${vix?.change > 5 ? `VIX surging +${vix.change.toFixed(1)}%. ` : ""}${spy?.change < -1 ? `Equities under pressure. ` : ""}${wti?.change < -2 ? "Oil sliding." : ""}`
-              : `Risk-on tone. ${btc?.change > 2 ? `Crypto leading gains. ` : ""}${spy?.change > 0.5 ? `Equities firm. ` : ""}${upCount} of ${assets.length} assets positive.`;
-            const color = isRiskOff ? "#ff4466" : "#00ff88";
-            return (
-              <div style={{
-                background: `rgba(${isRiskOff ? "255,68,102" : "0,255,136"},0.06)`,
-                border: `1px solid ${isRiskOff ? "rgba(255,68,102,0.2)" : "rgba(0,255,136,0.2)"}`,
-                borderRadius: 8, padding: "10px 14px",
-                display: "flex", alignItems: "center", gap: 10,
-              }}>
-                <div style={{
-                  width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                  background: isRiskOff ? "#ff4466" : "#00ff88",
-                  boxShadow: `0 0 8px ${isRiskOff ? "#ff4466" : "#00ff88"}`,
-                }} />
-                <div>
-                  <div style={{ fontSize: 10, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 2 }}>Market Summary</div>
-                  <div style={{ fontSize: 13, color: "#ddd", lineHeight: 1.5 }}>{summary}</div>
-                </div>
-              </div>
-            );
-          })()}
+
+          {/* Market Regime Engine — replaces old summary banner */}
+          <MarketRegimeCard assets={assets} onRegimeChange={setRiskMode} />
 
           {/* Sentiment + Aggregate Signal */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>

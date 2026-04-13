@@ -893,7 +893,7 @@ const AssetCard = memo(({ asset, debugMode }) => {
   const isNearLow  = prices.length > 1 && asset.price <= low24  * 1.002;
 
   return (
-    <div style={{
+    <div className="asset-card" style={{
       background: flashing
         ? `rgba(${isPos ? "0,255,136" : "255,68,102"},0.10)`
         : isDataError ? "rgba(255,68,102,0.05)"
@@ -1757,7 +1757,7 @@ const PortfolioPanel = ({ assets }) => {
         const isGain = row.unrealizedPnL >= 0;
         const c = pnlColor(row.unrealizedPnL);
         return (
-          <div key={row.id} style={{
+          <div key={row.id} className="portfolio-row" style={{
             display: "grid", gridTemplateColumns: "1fr 0.7fr 0.9fr 0.9fr 1fr 0.6fr 0.5fr",
             gap: 8, padding: "10px 10px",
             background: isGain ? "rgba(0,255,136,0.02)" : "rgba(255,68,102,0.02)",
@@ -1773,14 +1773,14 @@ const PortfolioPanel = ({ assets }) => {
               ${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <div style={{ fontSize: 12, fontWeight: 600, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.currentValue)}</div>
-            <div style={{ fontSize: 12, color: "#666", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.costBasis)}</div>
+            <div className="portfolio-col-hide" style={{ fontSize: 12, color: "#666", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.costBasis)}</div>
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, color: c, fontFamily: "'Space Mono', monospace" }}>
                 {row.unrealizedPnL >= 0 ? "+" : "-"}{fmt$(row.unrealizedPnL)}
               </div>
               <div style={{ fontSize: 10, color: c, opacity: 0.8, fontFamily: "'Space Mono', monospace" }}>{fmtPct(row.unrealizedPct)}</div>
             </div>
-            <div>
+            <div className="portfolio-col-hide">
               <div style={{ fontSize: 10, color: "#888", fontFamily: "'Space Mono', monospace", marginBottom: 3 }}>{row.allocation.toFixed(1)}%</div>
               <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2 }}>
                 <div style={{ height: "100%", width: `${Math.min(row.allocation, 100)}%`, background: c, borderRadius: 2, transition: "width 0.8s ease" }} />
@@ -2100,6 +2100,7 @@ export default function MarketMonitor() {
         ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
         @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
         @keyframes scan { 0% { transform: translateY(-100%); } 100% { transform: translateY(100vh); } }
         body { font-size: 14px; }
@@ -2107,6 +2108,106 @@ export default function MarketMonitor() {
         .tab-btn:hover { background: rgba(255,255,255,0.05); color: #ccc; }
         .tab-active { background: rgba(255,255,255,0.08) !important; color: #00ff88 !important; }
         .asset-grid { display: flex; flex-direction: column; gap: 6px; }
+
+        /* ── MOBILE LAYOUT (≤768px) ───────────────────────────── */
+        @media (max-width: 768px) {
+
+          /* Top bar — compact single row */
+          .topbar-logo-subtitle { display: none !important; }
+          .topbar-ticker { display: none !important; }
+          .topbar-debug { display: none !important; }
+          .topbar-clock-detail { display: none !important; }
+
+          /* Main grid → single column stack */
+          .main-grid {
+            display: flex !important;
+            flex-direction: column !important;
+            overflow-y: auto !important;
+            height: auto !important;
+          }
+
+          /* Left panel → horizontal scrolling asset strip */
+          .left-panel {
+            padding: 8px !important;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            max-height: none !important;
+            border-bottom: 1px solid rgba(255,255,255,0.07) !important;
+          }
+          .left-panel-headers { display: none !important; }
+          .asset-grid {
+            flex-direction: row !important;
+            gap: 8px !important;
+            padding-bottom: 4px !important;
+          }
+          .asset-card {
+            min-width: 130px !important;
+            flex-shrink: 0 !important;
+          }
+
+          /* Center panel — full width, scrollable */
+          .center-panel {
+            overflow-y: auto !important;
+            min-height: 0 !important;
+            padding: 10px !important;
+          }
+
+          /* Right sidebar → fixed drawer from bottom */
+          .right-sidebar {
+            position: fixed !important;
+            bottom: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            top: auto !important;
+            height: 70vh !important;
+            z-index: 200 !important;
+            border-top: 1px solid rgba(255,255,255,0.12) !important;
+            border-radius: 12px 12px 0 0 !important;
+            animation: slideUp 0.25s ease !important;
+            overflow-y: auto !important;
+          }
+
+          /* Alerts bar → compact */
+          .alerts-bar {
+            max-height: 100px !important;
+            font-size: 11px !important;
+          }
+
+          /* Charts — slightly shorter */
+          .recharts-wrapper { max-height: 140px !important; }
+
+          /* Stats grid → 2 columns */
+          .stats-grid { grid-template-columns: 1fr 1fr !important; }
+
+          /* Heatmap → 2 columns */
+          .heatmap-grid { grid-template-columns: repeat(2, 1fr) !important; }
+
+          /* Portfolio grid → simplified */
+          .portfolio-row {
+            grid-template-columns: 1fr 0.8fr 0.8fr 0.8fr !important;
+          }
+          .portfolio-col-hide { display: none !important; }
+
+          /* Notification toasts — full width on mobile */
+          .toast-container {
+            left: 8px !important;
+            right: 8px !important;
+            top: 60px !important;
+          }
+
+          /* Tab buttons — larger tap targets */
+          .tab-btn { padding: 8px 12px !important; font-size: 10px !important; }
+
+          /* Bigger tap targets for all buttons */
+          button { min-height: 36px !important; }
+        }
+
+        /* ── SMALL MOBILE (≤480px) ────────────────────────────── */
+        @media (max-width: 480px) {
+          .asset-card { min-width: 115px !important; }
+          .center-panel { padding: 8px !important; }
+          .topbar-risk { font-size: 9px !important; padding: 4px 8px !important; }
+        }
       `}</style>
 
       {/* Scan line effect */}
@@ -2116,7 +2217,7 @@ export default function MarketMonitor() {
       }} />
 
       {/* Notifications */}
-      <div style={{ position: "fixed", top: 64, right: 16, zIndex: 1000, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div className="toast-container" style={{ position: "fixed", top: 64, right: 16, zIndex: 1000, display: "flex", flexDirection: "column", gap: 8 }}>
         {notifications.map(n => <NotificationToast key={n.id} notification={n} />)}
       </div>
 
@@ -2139,12 +2240,12 @@ export default function MarketMonitor() {
             <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: 2, color: "#f0f0f0", fontFamily: "'Space Mono', monospace" }}>
               THE MARKET MONITOR
             </div>
-            <div style={{ fontSize: 9, color: "#666", letterSpacing: 1 }}>FINANCIAL INTELLIGENCE TERMINAL</div>
+            <div className="topbar-logo-subtitle" style={{ fontSize: 9, color: "#666", letterSpacing: 1 }}>FINANCIAL INTELLIGENCE TERMINAL</div>
           </div>
         </div>
 
         {/* Center — ticker */}
-        <div style={{ display: "flex", gap: 20, alignItems: "center", overflow: "hidden" }}>
+        <div className="topbar-ticker" style={{ display: "flex", gap: 20, alignItems: "center", overflow: "hidden" }}>
           {assets.slice(0, 5).map(a => (
             <div key={a.id} style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}>
               <span style={{ fontSize: 10, color: "#666", fontFamily: "'Space Mono', monospace" }}>{a.id}</span>
@@ -2157,6 +2258,7 @@ export default function MarketMonitor() {
         {/* Right */}
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <button
+            className="topbar-risk"
             onClick={() => setRiskMode(m => m === "on" ? "off" : "on")}
             style={{
               background: riskMode === "on" ? "rgba(0,255,136,0.15)" : "rgba(255,68,102,0.15)",
@@ -2180,6 +2282,7 @@ export default function MarketMonitor() {
             {isPaused ? "▶" : "⏸"}
           </button>
           <button
+            className="topbar-debug"
             onClick={() => setDebugMode(d => !d)}
             title="Toggle debug mode"
             style={{
@@ -2207,7 +2310,7 @@ export default function MarketMonitor() {
             <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>
               {time.toLocaleTimeString("en-US", { hour12: false })}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+            <div className="topbar-clock-detail" style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
               <div style={{
                 width: 6, height: 6, borderRadius: "50%",
                 background: error ? "#ffd700" : isMarketOpen() ? "#00ff88" : "#ff4466",
@@ -2238,12 +2341,12 @@ export default function MarketMonitor() {
       </header>
 
       {/* MAIN LAYOUT */}
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: showSidebar ? "240px 1fr 320px" : "240px 1fr", gridTemplateRows: "1fr auto", gap: 1, background: "rgba(255,255,255,0.04)", minHeight: 0, transition: "grid-template-columns 0.3s ease" }}>
+      <div className="main-grid" style={{ flex: 1, display: "grid", gridTemplateColumns: showSidebar ? "240px 1fr 320px" : "240px 1fr", gridTemplateRows: "1fr auto", gap: 1, background: "rgba(255,255,255,0.04)", minHeight: 0, transition: "grid-template-columns 0.3s ease" }}>
 
         {/* LEFT — Asset Panel */}
-        <div style={{ background: "#0a0a0f", padding: 12, overflowY: "auto", display: "flex", flexDirection: "column", gap: 0 }}>
+        <div className="left-panel" style={{ background: "#0a0a0f", padding: 12, overflowY: "auto", display: "flex", flexDirection: "column", gap: 0 }}>
           {/* Column headers */}
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", marginBottom: 8 }}>
+          <div className="left-panel-headers" style={{ display: "flex", justifyContent: "space-between", padding: "4px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", marginBottom: 8 }}>
             <span style={{ fontSize: 9, color: "#666", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>Asset</span>
             <div style={{ display: "flex", gap: 24 }}>
               <span style={{ fontSize: 9, color: "#666", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>Price</span>
@@ -2274,7 +2377,7 @@ export default function MarketMonitor() {
         </div>
 
         {/* CENTER — Charts & Metrics */}
-        <div style={{ background: "#0a0a0f", padding: 16, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="center-panel" style={{ background: "#0a0a0f", padding: 16, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
 
           {/* Center tab bar */}
           <div style={{ display: "flex", gap: 4, borderBottom: "1px solid rgba(255,255,255,0.06)", marginBottom: 4 }}>
@@ -2451,7 +2554,7 @@ export default function MarketMonitor() {
           </>)}
         </div>
         {showSidebar && (
-        <div style={{ background: "#0a0a0f", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div className="right-sidebar" style={{ background: "#0a0a0f", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
           {/* Header */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.07)", flexShrink: 0 }}>
@@ -2563,7 +2666,7 @@ export default function MarketMonitor() {
         )}
 
         {/* BOTTOM — Alerts Log */}
-        <div style={{
+        <div className="alerts-bar" style={{
           gridColumn: "1 / -1", background: "#0a0a0f",
           borderTop: "1px solid rgba(255,255,255,0.07)",
           padding: "8px 16px", maxHeight: 140, overflow: "hidden",

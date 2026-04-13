@@ -1103,6 +1103,178 @@ const AssetCard = memo(({ asset, debugMode }) => {
   );
 });
 
+// ─────────────────────────────────────────────
+// NEWS REACTION TRACKER
+// Detects major moves and logs them as "events"
+// No external API — derives context from existing asset state
+// ─────────────────────────────────────────────
+
+const REACTION_THRESHOLDS = {
+  BTC:  { move: 1.5, label: "Bitcoin"   },
+  SPY:  { move: 0.8, label: "S&P 500"   },
+  ETH:  { move: 2.0, label: "Ethereum"  },
+  VIX:  { move: 8.0, label: "VIX"       }, // VIX moves in % change, 8% = meaningful
+  WTI:  { move: 2.0, label: "Crude Oil" },
+  GOLD: { move: 1.0, label: "Gold"      },
+};
+
+const MAX_EVENTS = 8;
+
+// Generates a plain-English reaction summary from the full assets snapshot
+function describeReaction(triggerAsset, assets) {
+  const btc = assets.find(a => a.id === "BTC")?.change ?? 0;
+  const spy = assets.find(a => a.id === "SPY")?.change ?? 0;
+  const vix = assets.find(a => a.id === "VIX");
+  const vixChange = vix?.change ?? 0;
+  const vixLevel  = vix?.price  ?? 15;
+
+  const up   = triggerAsset.change > 0;
+  const risk = spy > 0.5 && btc > 0 && vixChange < 0;
+  const fear = vixLevel > 25 || (vixChange > 8 && spy < 0);
+  const mixed= Math.abs(spy - btc / 10) > 2; // crypto and equities diverging
+
+  if (triggerAsset.id === "VIX") {
+    if (up)  return vixLevel > 25 ? "Fear spike — risk-off conditions" : "Volatility rising — caution warranted";
+    return "Volatility falling — risk appetite improving";
+  }
+
+  if (fear)  return "Fear regime — broad risk-off across assets";
+  if (risk)  return "Strong risk-on — equities + crypto confirming";
+  if (mixed) return "Divergence detected — crypto/equity decoupling";
+  if (up)    return `${triggerAsset.id} leading — watch for follow-through`;
+  return `${triggerAsset.id} selling — monitor correlated assets`;
+}
+
+// Hook — monitors assets for threshold crosses, stores event log in state
+const useNewsReactionTracker = (assets) => {
+  const [events, setEvents] = useState([]);
+  const prevRef = useRef({});   // id → last known change value
+  const seenRef = useRef(new Set()); // dedup: id + direction + minute bucket
+
+  useEffect(() => {
+    if (!assets?.length) return;
+
+    const newEvents = [];
+    const now  = Date.now();
+    const tick = Math.floor(now / 60_000); // 1-minute bucket for dedup
+
+    for (const [id, cfg] of Object.entries(REACTION_THRESHOLDS)) {
+      const asset = assets.find(a => a.id === id);
+      if (!asset) continue;
+
+      const change    = asset.change ?? 0;
+      const prevChange= prevRef.current[id] ?? 0;
+      const direction = change > 0 ? "up" : "down";
+      const crossed   = Math.abs(change) >= cfg.move && Math.abs(prevChange) < cfg.move;
+      const dedupKey  = `${id}_${direction}_${tick}`;
+
+      if (crossed && !seenRef.current.has(dedupKey)) {
+        seenRef.current.add(dedupKey);
+        newEvents.push({
+          id:        `${id}_${now}`,
+          asset:     id,
+          label:     cfg.label,
+          change,
+          direction,
+          reaction:  describeReaction(asset, assets),
+          time:      new Date(now),
+          severity:  Math.abs(change) >= cfg.move * 2 ? "high" : "medium",
+        });
+      }
+
+      prevRef.current[id] = change;
+    }
+
+    if (newEvents.length > 0) {
+      setEvents(prev => [...newEvents, ...prev].slice(0, MAX_EVENTS));
+    }
+  }, [assets]);
+
+  return events;
+};
+
+// ── UI component ──────────────────────────────────────────────────
+const NewsReactionPanel = memo(({ assets }) => {
+  const events = useNewsReactionTracker(assets);
+
+  if (events.length === 0) return null; // invisible when nothing happening
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)",
+      border: "1px solid rgba(255,255,255,0.07)",
+      borderRadius: 8, padding: "12px 14px",
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: "#ffd700", boxShadow: "0 0 8px #ffd700",
+            animation: "pulse 1.5s infinite", flexShrink: 0,
+          }} />
+          <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
+            Market Reactions
+          </span>
+        </div>
+        <span style={{ fontSize: 9, color: "#333", fontFamily: "'Space Mono', monospace" }}>
+          {events.length} event{events.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Event list */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {events.map((evt, i) => {
+          const isUp     = evt.direction === "up";
+          const color    = evt.asset === "VIX"
+            ? (isUp ? "#ff4466" : "#00ff88")   // VIX up = bad, down = good
+            : (isUp ? "#00ff88" : "#ff4466");
+          const isHigh   = evt.severity === "high";
+
+          return (
+            <div key={evt.id} style={{
+              display: "flex", gap: 10, alignItems: "flex-start",
+              padding: "7px 10px", borderRadius: 5,
+              background: i === 0 ? `${color}0d` : "rgba(255,255,255,0.02)",
+              border: `1px solid ${i === 0 ? `${color}25` : "rgba(255,255,255,0.05)"}`,
+              borderLeft: `2px solid ${color}`,
+              animation: i === 0 ? "fadeIn 0.4s ease" : "none",
+              opacity: 1 - i * 0.1,   // fade older events
+            }}>
+              {/* Time */}
+              <span style={{ fontSize: 10, color: "#444", fontFamily: "'Space Mono', monospace", whiteSpace: "nowrap", flexShrink: 0, marginTop: 1 }}>
+                {evt.time.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" })}
+              </span>
+
+              {/* Content */}
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                  {/* Asset + move */}
+                  <span style={{ fontSize: 12, fontWeight: 700, color, fontFamily: "'Space Mono', monospace" }}>
+                    {evt.label} {evt.change >= 0 ? "+" : ""}{evt.change.toFixed(1)}%
+                  </span>
+                  {isHigh && (
+                    <span style={{
+                      fontSize: 8, padding: "1px 4px", borderRadius: 2,
+                      background: `${color}18`, color,
+                      fontFamily: "'Space Mono', monospace",
+                      border: `1px solid ${color}33`,
+                    }}>MAJOR</span>
+                  )}
+                </div>
+                {/* Reaction */}
+                <span style={{ fontSize: 11, color: "#888" }}>
+                  {evt.reaction}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
 const SentimentGauge = ({ assets }) => {
   const score = assets.reduce((acc, a) => {
     const weight = a.id === "VIX" ? -2 : a.id === "BTC" || a.id === "SPY" ? 2 : 1;
@@ -3358,6 +3530,9 @@ export default function MarketMonitor() {
           </div>
 
           <Heatmap assets={assets} />
+
+          {/* News Reaction Tracker — only visible when events detected */}
+          <NewsReactionPanel assets={assets} />
 
           {/* Main chart — BTC + SPY */}
           <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: 16 }}>

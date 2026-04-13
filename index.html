@@ -2,9 +2,48 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>market-monitor</title>
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+
+    <!--
+      viewport-fit=cover is REQUIRED for env(safe-area-inset-*) to return
+      non-zero values on iOS. Without it, notch/home-indicator insets are
+      always 0 and all the safe-area CSS does nothing.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+
+    <title>The Market Monitor</title>
+
+    <style>
+      /*
+        These styles are applied BEFORE React mounts.
+        They size #root (Vite's container div) so that the app wrapper
+        inside it can use 100dvh / 100% correctly.
+
+        Without this, #root is height:auto and the inner div's
+        min-height:100dvh has nothing to stretch against on some browsers.
+      */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow-x: hidden;
+        background: #0a0a0f; /* prevent flash of white before React mounts */
+      }
+
+      #root {
+        width: 100%;
+        min-height: 100dvh;
+        min-height: -webkit-fill-available; /* Safari <15.4 fallback */
+        display: flex;
+        flex-direction: column;
+        overflow-x: hidden;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

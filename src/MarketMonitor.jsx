@@ -3612,21 +3612,10 @@ export default function MarketMonitor() {
         @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
 
         /* ── GLOBAL RESETS ───────────────────────────────────────── */
+        /* html/body/root sizing lives in index.html so it runs before React.
+           We only need component-level resets here. */
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-        /* Prevent horizontal overflow globally — 100vw includes scrollbar width
-           and can cause right-side cutoff on mobile */
-        html {
-          overflow-x: hidden;
-          /* Allow safe-area env() variables to work on older iOS */
-          -webkit-text-size-adjust: 100%;
-        }
-        body {
-          overflow-x: hidden;
-          width: 100%;
-          /* Fill available on older Safari that doesn't support dvh */
-          min-height: -webkit-fill-available;
-        }
+        html { -webkit-text-size-adjust: 100%; }
 
         /* ── SCROLLBAR ──────────────────────────────────────────── */
         ::-webkit-scrollbar { width: 4px; height: 4px; }
@@ -3647,35 +3636,28 @@ export default function MarketMonitor() {
         @media (max-width: 768px) {
 
           /* ── Viewport + safe area ──────────────────────────────
-           * 100dvh = dynamic viewport height (excludes browser chrome on mobile)
-           * env(safe-area-inset-*) = notch / home indicator clearance (iOS)
-           * overflow-x: hidden prevents horizontal scroll from any element
-           *   slightly wider than the screen (common cause of right cutoff)
+           * index.html owns html/body/#root sizing and viewport-fit=cover.
+           * viewport-fit=cover is what makes env(safe-area-inset-*) non-zero.
+           * Here we only handle the app-level wrapper and inner panels.
            */
-          html, body {
-            height: 100%;
-            width: 100%;
-            max-width: 100%;
-            overflow-x: hidden;
-            overscroll-behavior: none;
-          }
 
-          /* Root app wrapper — safe-area padding + no horizontal overflow */
+          /* Prevent rubber-band scroll bounce revealing background */
+          html, body { overscroll-behavior: none; overflow-x: hidden; }
+
+          /* App wrapper — fill #root, no horizontal escape */
           div[data-app-root] {
-            min-height: 100dvh !important;
-            min-height: -webkit-fill-available !important;
             width: 100% !important;
-            max-width: 100vw !important;
+            max-width: 100% !important;           /* never use 100vw — includes scrollbar */
             overflow-x: hidden !important;
-            /* Apply safe area insets at the root so all children inherit the space */
+            /* Safe-area padding at the outermost app layer.
+               Works because index.html sets viewport-fit=cover. */
             padding-top: env(safe-area-inset-top, 0px) !important;
             padding-bottom: env(safe-area-inset-bottom, 0px) !important;
             padding-left: env(safe-area-inset-left, 0px) !important;
             padding-right: env(safe-area-inset-right, 0px) !important;
           }
 
-          /* Top bar — compact, keep only essentials.
-           * Do NOT add extra padding-top here — it's handled by the root wrapper above */
+          /* Top bar — compact, keep only essentials */
           .topbar-logo-subtitle { display: none !important; }
           .topbar-ticker        { display: none !important; }
           .topbar-debug         { display: none !important; }
@@ -3683,9 +3665,6 @@ export default function MarketMonitor() {
           header {
             height: 48px !important;
             padding: 0 12px !important;
-            /* Remove the inline paddingTop safe-area we added earlier —
-               now handled by root wrapper to avoid double-padding */
-            padding-top: 0 !important;
           }
 
           /* Main grid → single column, let root wrapper scroll */
@@ -3734,6 +3713,9 @@ export default function MarketMonitor() {
             width: 100% !important;
             max-width: 100% !important;
           }
+
+          /* Flex children must not overflow their container */
+          .main-grid > *, .center-panel > * { min-width: 0; max-width: 100%; }
 
           /* Center tab bar — scrollable row, bigger tap targets */
           .tab-btn {
@@ -3811,7 +3793,7 @@ export default function MarketMonitor() {
           .mobile-regime-label { font-size: 22px !important; }
           /* Extra insurance against horizontal overflow on very small screens */
           div[data-app-root], .main-grid, .center-panel, .left-panel {
-            max-width: 100vw !important;
+            max-width: 100% !important;
             overflow-x: hidden !important;
           }
         }
@@ -4444,7 +4426,7 @@ export default function MarketMonitor() {
           gridColumn: "1 / -1", background: "#0a0a0f",
           borderTop: "1px solid rgba(255,255,255,0.07)",
           padding: "8px 16px",
-          paddingBottom: "calc(8px + env(safe-area-inset-bottom, 0px))",  /* home indicator */
+          paddingBottom: "calc(80px + env(safe-area-inset-bottom, 0px))",  /* clear Safari bottom bar */
           maxHeight: 140, overflow: "hidden",
           display: "flex", flexDirection: "column",
         }}>

@@ -466,12 +466,192 @@ const useMarketData = (isPaused = false) => {
   return { assets, lastUpdated, error, wsConnected };
 };
 
-const useAlerts = (assets) => {
-  const [alerts, setAlerts] = useState([]);
+// ─────────────────────────────────────────────
+// ALERT RULES — declarative multi-condition system
+// Each rule: { key, name, severity, cooldown, condition(snap), message(snap) }
+// snap = { assets, prev } — current and previous asset snapshots
+// ─────────────────────────────────────────────
+
+const ALERT_RULES = [
+  // ── Single-asset rules (existing logic, now declarative) ──────
+  {
+    key:      "VIX_EXTREME",
+    name:     "VIX Extreme",
+    severity: "critical",
+    cooldown: 5 * 60 * 1000,
+    condition: ({ assets, prev }) => {
+      const v = assets.VIX, p = prev.VIX;
+      return v && p && v.price >= ALERT_THRESHOLDS.VIX_EXTREME && p.price < ALERT_THRESHOLDS.VIX_EXTREME;
+    },
+    message: ({ assets }) => `VIX at ${assets.VIX?.price?.toFixed(2)} — Panic levels`,
+    triggers: () => ["VIX > 30"],
+  },
+  {
+    key:      "VIX_DANGER",
+    name:     "VIX Danger",
+    severity: "danger",
+    cooldown: 5 * 60 * 1000,
+    condition: ({ assets, prev }) => {
+      const v = assets.VIX, p = prev.VIX;
+      return v && p && v.price >= ALERT_THRESHOLDS.VIX_DANGER && v.price < ALERT_THRESHOLDS.VIX_EXTREME && p.price < ALERT_THRESHOLDS.VIX_DANGER;
+    },
+    message: ({ assets }) => `VIX at ${assets.VIX?.price?.toFixed(2)} — Elevated volatility`,
+    triggers: () => ["VIX > 25"],
+  },
+  {
+    key:      "OIL_SPIKE",
+    name:     "Oil Spike",
+    severity: "warning",
+    cooldown: 3 * 60 * 1000,
+    condition: ({ assets, prev }) => {
+      const w = assets.WTI, p = prev.WTI;
+      return w && p && Math.abs(w.change) > ALERT_THRESHOLDS.OIL_MOVE_PCT && Math.abs(p.change) <= ALERT_THRESHOLDS.OIL_MOVE_PCT;
+    },
+    message: ({ assets }) => `WTI ${assets.WTI?.change >= 0 ? "+" : ""}${assets.WTI?.change?.toFixed(2)}% — Macro risk`,
+    triggers: ({ assets }) => [`WTI ${assets.WTI?.change >= 0 ? "+" : ""}${assets.WTI?.change?.toFixed(2)}%`],
+  },
+  {
+    key:      "CRYPTO_MOVE_BTC",
+    name:     "BTC Move",
+    severity: "info",
+    cooldown: 2 * 60 * 1000,
+    condition: ({ assets, prev }) => {
+      const b = assets.BTC, p = prev.BTC;
+      return b && p && Math.abs(b.change) > ALERT_THRESHOLDS.CRYPTO_MOVE_PCT && Math.abs(p.change) <= ALERT_THRESHOLDS.CRYPTO_MOVE_PCT;
+    },
+    message: ({ assets }) => `BTC ${assets.BTC?.change >= 0 ? "+" : ""}${assets.BTC?.change?.toFixed(2)}%`,
+    triggers: ({ assets }) => [`BTC ${assets.BTC?.change >= 0 ? "+" : ""}${assets.BTC?.change?.toFixed(2)}%`],
+  },
+  {
+    key:      "CRYPTO_MOVE_ETH",
+    name:     "ETH Move",
+    severity: "info",
+    cooldown: 2 * 60 * 1000,
+    condition: ({ assets, prev }) => {
+      const e = assets.ETH, p = prev.ETH;
+      return e && p && Math.abs(e.change) > ALERT_THRESHOLDS.CRYPTO_MOVE_PCT && Math.abs(p.change) <= ALERT_THRESHOLDS.CRYPTO_MOVE_PCT;
+    },
+    message: ({ assets }) => `ETH ${assets.ETH?.change >= 0 ? "+" : ""}${assets.ETH?.change?.toFixed(2)}%`,
+    triggers: ({ assets }) => [`ETH ${assets.ETH?.change >= 0 ? "+" : ""}${assets.ETH?.change?.toFixed(2)}%`],
+  },
+
+  // ── Multi-condition rules ─────────────────────────────────────
+  {
+    key:      "VIX_AND_BTC_CRASH",
+    name:     "Fear + Crypto Selling",
+    severity: "danger",
+    isMulti:  true,
+    cooldown: 10 * 60 * 1000,
+    condition: ({ assets }) => {
+      const vix = assets.VIX, btc = assets.BTC;
+      return vix && btc && vix.price > 25 && btc.change < -3;
+    },
+    message: ({ assets }) => `VIX ${assets.VIX?.price?.toFixed(1)} + BTC ${assets.BTC?.change?.toFixed(2)}% — Risk-off across the board`,
+    triggers: ({ assets }) => [`VIX ${assets.VIX?.price?.toFixed(1)} > 25`, `BTC ${assets.BTC?.change?.toFixed(2)}% < -3%`],
+  },
+  {
+    key:      "SPY_DOWN_OIL_UP",
+    name:     "Stagflation Signal",
+    severity: "warning",
+    isMulti:  true,
+    cooldown: 10 * 60 * 1000,
+    condition: ({ assets }) => {
+      const spy = assets.SPY, oil = assets.WTI;
+      return spy && oil && spy.change < -1 && oil.change > 3;
+    },
+    message: ({ assets }) => `SPY ${assets.SPY?.change?.toFixed(2)}% + Oil +${assets.WTI?.change?.toFixed(2)}% — Stagflation pressure`,
+    triggers: ({ assets }) => [`SPY ${assets.SPY?.change?.toFixed(2)}%`, `WTI +${assets.WTI?.change?.toFixed(2)}%`],
+  },
+  {
+    key:      "VIX_SPIKE_SPY_SELL",
+    name:     "Panic Selloff",
+    severity: "critical",
+    isMulti:  true,
+    cooldown: 10 * 60 * 1000,
+    condition: ({ assets }) => {
+      const vix = assets.VIX, spy = assets.SPY;
+      return vix && spy && vix.change > 15 && spy.change < -1.5;
+    },
+    message: ({ assets }) => `VIX +${assets.VIX?.change?.toFixed(1)}% + SPY ${assets.SPY?.change?.toFixed(2)}% — Panic conditions`,
+    triggers: ({ assets }) => [`VIX +${assets.VIX?.change?.toFixed(1)}%`, `SPY ${assets.SPY?.change?.toFixed(2)}%`],
+  },
+  {
+    key:      "CRYPTO_AND_EQUITY_RALLY",
+    name:     "Broad Risk-On",
+    severity: "info",
+    isMulti:  true,
+    cooldown: 15 * 60 * 1000,
+    condition: ({ assets }) => {
+      const spy = assets.SPY, btc = assets.BTC, vix = assets.VIX;
+      return spy && btc && vix && spy.change > 1 && btc.change > 3 && vix.price < 18;
+    },
+    message: ({ assets }) => `SPY +${assets.SPY?.change?.toFixed(2)}% + BTC +${assets.BTC?.change?.toFixed(2)}% + VIX low — Strong risk-on`,
+    triggers: ({ assets }) => [`SPY +${assets.SPY?.change?.toFixed(2)}%`, `BTC +${assets.BTC?.change?.toFixed(2)}%`, `VIX < 18`],
+  },
+  {
+    key:      "DOLLAR_SURGE_SPY_DROP",
+    name:     "Dollar Squeeze",
+    severity: "warning",
+    isMulti:  true,
+    cooldown: 10 * 60 * 1000,
+    condition: ({ assets }) => {
+      const dxy = assets.DXY, spy = assets.SPY;
+      return dxy && spy && dxy.change > 0.8 && spy.change < -0.8;
+    },
+    message: ({ assets }) => `DXY +${assets.DXY?.change?.toFixed(2)}% + SPY ${assets.SPY?.change?.toFixed(2)}% — Dollar strength crushing equities`,
+    triggers: ({ assets }) => [`DXY +${assets.DXY?.change?.toFixed(2)}%`, `SPY ${assets.SPY?.change?.toFixed(2)}%`],
+  },
+  {
+    key:      "TNX_SPIKE_EQUITY_SELL",
+    name:     "Rates Shock",
+    severity: "danger",
+    isMulti:  true,
+    cooldown: 10 * 60 * 1000,
+    condition: ({ assets }) => {
+      const tnx = assets.TNX, spy = assets.SPY, qqq = assets.QQQ;
+      return tnx && spy && qqq && tnx.change > 3 && spy.change < -0.5 && qqq.change < -1;
+    },
+    message: ({ assets }) => `10Y +${assets.TNX?.change?.toFixed(2)}% + SPY ${assets.SPY?.change?.toFixed(2)}% + QQQ ${assets.QQQ?.change?.toFixed(2)}% — Rising rates hitting growth`,
+    triggers: ({ assets }) => [`TNX +${assets.TNX?.change?.toFixed(2)}%`, `SPY ${assets.SPY?.change?.toFixed(2)}%`, `QQQ ${assets.QQQ?.change?.toFixed(2)}%`],
+  },
+  {
+    key:      "OIL_VIX_MACRO_STRESS",
+    name:     "Macro Stress",
+    severity: "danger",
+    isMulti:  true,
+    cooldown: 10 * 60 * 1000,
+    condition: ({ assets }) => {
+      const wti = assets.WTI, vix = assets.VIX, spy = assets.SPY;
+      return wti && vix && spy && wti.change > 4 && vix.price > 22 && spy.change < -0.5;
+    },
+    message: ({ assets }) => `Oil +${assets.WTI?.change?.toFixed(2)}% + VIX ${assets.VIX?.price?.toFixed(1)} + SPY weak — Macro stress building`,
+    triggers: ({ assets }) => [`WTI +${assets.WTI?.change?.toFixed(2)}%`, `VIX ${assets.VIX?.price?.toFixed(1)}`, `SPY ${assets.SPY?.change?.toFixed(2)}%`],
+  },
+
+  // ── Regime Shift (special — uses regime param) ─────────────────
+  {
+    key:      "REGIME_SHIFT",
+    name:     "Regime Shift",
+    severity: "danger",
+    cooldown: 5 * 60 * 1000,
+    condition: ({ regime, prevRegime }) => {
+      return regime && prevRegime && regime !== prevRegime && prevRegime !== null;
+    },
+    message: ({ regime, prevRegime }) => `Regime changed: ${prevRegime} → ${regime}`,
+    triggers: ({ regime, prevRegime }) => [`${prevRegime} → ${regime}`],
+  },
+];
+
+// ─────────────────────────────────────────────
+// useAlerts — multi-condition, regime-aware
+// ─────────────────────────────────────────────
+const useAlerts = (assets, regime = null) => {
+  const [alerts, setAlerts]           = useState([]);
   const [notifications, setNotifications] = useState([]);
-  const prevAssetsRef = useRef({});
-  const cooldownsRef = useRef({});
-  const seenKeysRef = useRef(new Set());
+  const prevAssetsRef  = useRef({});         // id → last asset snapshot
+  const prevRegimeRef  = useRef(null);       // last known regime
+  const cooldownsRef   = useRef({});         // rule key → last fired timestamp
+  const seenKeysRef    = useRef(new Set());  // dedup within session
 
   const canFire = useCallback((key, cooldownMs) => {
     const now = Date.now();
@@ -482,49 +662,77 @@ const useAlerts = (assets) => {
   }, []);
 
   useEffect(() => {
+    // Build asset snapshot map
+    const snap = {};
+    assets.forEach(a => { snap[a.id] = a; });
+    const prevSnap = prevAssetsRef.current;
+
     const newAlerts = [];
-    assets.forEach(asset => {
-      const prev = prevAssetsRef.current[asset.id];
-      if (!prev || asset.loading) { prevAssetsRef.current[asset.id] = asset; return; }
-      if (asset.id === "VIX" && asset.price >= ALERT_THRESHOLDS.VIX_EXTREME && prev.price < ALERT_THRESHOLDS.VIX_EXTREME) {
-        const key = `VIX_EXTREME_${Math.floor(asset.price / 5)}`;
-        if (!seenKeysRef.current.has(key) && canFire("VIX_EXTREME", ALERT_COOLDOWNS.VIX_EXTREME)) {
-          seenKeysRef.current.add(key);
-          newAlerts.push({ id: `${key}_${Date.now()}`, level: "critical", msg: `VIX EXTREME: ${asset.price.toFixed(2)} — Panic levels`, time: new Date() });
-          ALERT_SOUNDS.critical();
-        }
-      } else if (asset.id === "VIX" && asset.price >= ALERT_THRESHOLDS.VIX_DANGER && prev.price < ALERT_THRESHOLDS.VIX_DANGER) {
-        const key = `VIX_DANGER_${Math.floor(asset.price / 2)}`;
-        if (!seenKeysRef.current.has(key) && canFire("VIX_DANGER", ALERT_COOLDOWNS.VIX_DANGER)) {
-          seenKeysRef.current.add(key);
-          newAlerts.push({ id: `${key}_${Date.now()}`, level: "danger", msg: `VIX DANGER: ${asset.price.toFixed(2)} — High volatility`, time: new Date() });
-          ALERT_SOUNDS.danger();
-        }
+
+    for (const rule of ALERT_RULES) {
+      // Skip regime rule here — handled separately below
+      if (rule.key === "REGIME_SHIFT") continue;
+
+      const ctx = { assets: snap, prev: prevSnap, regime, prevRegime: prevRegimeRef.current };
+
+      try {
+        if (!rule.condition(ctx)) continue;
+      } catch { continue; }
+
+      // Deduplicate with date-scoped key
+      const dedupKey = `${rule.key}_${new Date().toDateString()}`;
+      if (seenKeysRef.current.has(dedupKey)) continue;
+      if (!canFire(rule.key, rule.cooldown)) continue;
+
+      seenKeysRef.current.add(dedupKey);
+
+      const triggerList = rule.triggers ? rule.triggers(ctx) : [];
+      const msg = rule.message(ctx);
+
+      newAlerts.push({
+        id:       `${rule.key}_${Date.now()}`,
+        level:    rule.severity,
+        name:     rule.name,
+        isMulti:  rule.isMulti ?? false,
+        msg,
+        triggers: triggerList,
+        time:     new Date(),
+      });
+
+      // Play sound
+      const sound = { critical: ALERT_SOUNDS.critical, danger: ALERT_SOUNDS.danger, warning: ALERT_SOUNDS.warning, info: ALERT_SOUNDS.info };
+      sound[rule.severity]?.();
+    }
+
+    // ── Regime shift alert ────────────────────────────────────────
+    const regimeRule = ALERT_RULES.find(r => r.key === "REGIME_SHIFT");
+    if (regimeRule && regime && prevRegimeRef.current && regime !== prevRegimeRef.current) {
+      const ctx = { regime, prevRegime: prevRegimeRef.current };
+      const dedupKey = `REGIME_SHIFT_${prevRegimeRef.current}_${regime}_${new Date().toDateString()}`;
+      if (!seenKeysRef.current.has(dedupKey) && canFire("REGIME_SHIFT", regimeRule.cooldown)) {
+        seenKeysRef.current.add(dedupKey);
+        newAlerts.push({
+          id:       `REGIME_SHIFT_${Date.now()}`,
+          level:    "danger",
+          name:     "Regime Shift",
+          msg:      regimeRule.message(ctx),
+          triggers: regimeRule.triggers(ctx),
+          time:     new Date(),
+        });
+        ALERT_SOUNDS.danger();
       }
-      if (asset.id === "WTI" && Math.abs(asset.change) > ALERT_THRESHOLDS.OIL_MOVE_PCT && Math.abs(prev.change) <= ALERT_THRESHOLDS.OIL_MOVE_PCT) {
-        const key = `OIL_SPIKE_${asset.change > 0 ? "up" : "dn"}_${new Date().toDateString()}`;
-        if (!seenKeysRef.current.has(key) && canFire("OIL_SPIKE", ALERT_COOLDOWNS.OIL_SPIKE)) {
-          seenKeysRef.current.add(key);
-          newAlerts.push({ id: `${key}_${Date.now()}`, level: "warning", msg: `OIL SPIKE: WTI ${asset.change >= 0 ? "+" : ""}${asset.change.toFixed(2)}%`, time: new Date() });
-          ALERT_SOUNDS.warning();
-        }
-      }
-      if ((asset.id === "BTC" || asset.id === "ETH") && Math.abs(asset.change) > ALERT_THRESHOLDS.CRYPTO_MOVE_PCT && Math.abs(prev.change) <= ALERT_THRESHOLDS.CRYPTO_MOVE_PCT) {
-        const key = `CRYPTO_${asset.id}_${asset.change > 0 ? "up" : "dn"}_${new Date().toDateString()}`;
-        if (!seenKeysRef.current.has(key) && canFire("CRYPTO_MOVE", ALERT_COOLDOWNS.CRYPTO_MOVE)) {
-          seenKeysRef.current.add(key);
-          newAlerts.push({ id: `${key}_${Date.now()}`, level: "info", msg: `CRYPTO MOVE: ${asset.label} ${asset.change >= 0 ? "+" : ""}${asset.change.toFixed(2)}%`, time: new Date() });
-          ALERT_SOUNDS.info();
-        }
-      }
-      prevAssetsRef.current[asset.id] = asset;
-    });
+    }
+
+    // Update refs
+    assets.forEach(a => { prevAssetsRef.current[a.id] = a; });
+    if (regime) prevRegimeRef.current = regime;
+
     if (newAlerts.length > 0) {
       setAlerts(prev => [...newAlerts, ...prev].slice(0, 50));
       setNotifications(prev => [...newAlerts, ...prev].slice(0, 3));
       setTimeout(() => setNotifications(prev => prev.slice(newAlerts.length)), 5000);
     }
-  }, [assets, canFire]);
+  }, [assets, regime, canFire]);
 
   return { alerts, notifications };
 };
@@ -926,16 +1134,48 @@ const SocialItem = memo(({ item }) => {
 const AlertItem = memo(({ alert }) => {
   const colors = { critical: "#ff0044", danger: "#ff4466", warning: "#ffd700", info: "#00aaff" };
   const color = colors[alert.level] || "#888";
+  const rgba = color === "#ff0044" ? "255,0,68" : color === "#ff4466" ? "255,68,102" : color === "#ffd700" ? "255,215,0" : "0,170,255";
   return (
     <div style={{
-      display: "flex", gap: 10, padding: "6px 10px", borderRadius: 4,
-      background: `rgba(${color === "#ff0044" ? "255,0,68" : color === "#ff4466" ? "255,68,102" : color === "#ffd700" ? "255,215,0" : "0,170,255"},0.07)`,
+      padding: "6px 10px", borderRadius: 4,
+      background: `rgba(${rgba},0.07)`,
       borderLeft: `2px solid ${color}`, marginBottom: 4, animation: "fadeIn 0.3s ease",
     }}>
-      <span style={{ fontSize: 11, color: "#888", fontFamily: "'Space Mono', monospace", whiteSpace: "nowrap" }}>
-        {alert.time.toLocaleTimeString("en-US", { hour12: false })}
-      </span>
-      <span style={{ fontSize: 12, color: "#eee" }}>{alert.msg}</span>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+        <span style={{ fontSize: 11, color: "#666", fontFamily: "'Space Mono', monospace", whiteSpace: "nowrap", flexShrink: 0, marginTop: 1 }}>
+          {alert.time.toLocaleTimeString("en-US", { hour12: false })}
+        </span>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
+            {alert.name && (
+              <span style={{ fontSize: 10, fontWeight: 700, color, fontFamily: "'Space Mono', monospace" }}>
+                [{alert.name}]
+              </span>
+            )}
+            {alert.isMulti && (
+              <span style={{
+                fontSize: 8, padding: "1px 4px", borderRadius: 2,
+                background: "rgba(255,255,255,0.08)", color: "#888",
+                fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+                border: "1px solid rgba(255,255,255,0.12)",
+              }}>MULTI</span>
+            )}
+          </div>
+          <span style={{ fontSize: 12, color: "#eee" }}>{alert.msg}</span>
+          {alert.triggers?.length > 0 && (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+              {alert.triggers.map((t, i) => (
+                <span key={i} style={{
+                  fontSize: 9, padding: "1px 5px", borderRadius: 2,
+                  background: `rgba(${rgba},0.15)`,
+                  color, border: `1px solid ${color}33`,
+                  fontFamily: "'Space Mono', monospace",
+                }}>{t}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 });
@@ -951,9 +1191,23 @@ const NotificationToast = ({ notification }) => {
       animation: "slideIn 0.3s ease",
     }}>
       <div style={{ fontSize: 11, color, fontWeight: 700, fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>
-        ALERT — {notification.level.toUpperCase()}
+        {notification.name ? `${notification.name.toUpperCase()}` : `ALERT — ${notification.level.toUpperCase()}`}
       </div>
-      <div style={{ fontSize: 12, color: "#d4d4d4" }}>{notification.msg}</div>
+      <div style={{ fontSize: 12, color: "#d4d4d4", marginBottom: notification.triggers?.length ? 8 : 0 }}>
+        {notification.msg}
+      </div>
+      {notification.triggers?.length > 0 && (
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {notification.triggers.map((t, i) => (
+            <span key={i} style={{
+              fontSize: 9, padding: "2px 6px", borderRadius: 3,
+              background: `rgba(${color === "#ff0044" ? "255,0,68" : color === "#ff4466" ? "255,68,102" : color === "#ffd700" ? "255,215,0" : "0,170,255"},0.15)`,
+              color, border: `1px solid ${color}44`,
+              fontFamily: "'Space Mono', monospace",
+            }}>{t}</span>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
@@ -1790,7 +2044,21 @@ const PrivateCreditPanel = memo(() => {
 export default function MarketMonitor() {
   const [isPaused, setIsPaused] = useState(false);
   const { assets, lastUpdated, error, wsConnected } = useMarketData(isPaused);
-  const { alerts, notifications } = useAlerts(assets);
+
+  // Compute regime here so both useAlerts and MarketRegimeCard share it
+  const currentRegime = useMemo(() => {
+    const spy = assets.find(a => a.id === "SPY");
+    const vix = assets.find(a => a.id === "VIX");
+    const btc = assets.find(a => a.id === "BTC");
+    return getMarketRegime({
+      vixPrice:  vix?.price  ?? null,
+      vixChange: vix?.change ?? null,
+      spyChange: spy?.change ?? null,
+      btcChange: btc?.change ?? null,
+    }).regime;
+  }, [assets]);
+
+  const { alerts, notifications } = useAlerts(assets, currentRegime);
   const time = useClock();
   const fearGreed = useFearGreed();
   const { refresh: refreshFearGreed, refreshing: fgRefreshing } = fearGreed;

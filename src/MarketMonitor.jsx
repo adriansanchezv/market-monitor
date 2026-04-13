@@ -1028,8 +1028,10 @@ const AssetCard = memo(({ asset, debugMode }) => {
   const sourceLabel = sourceCfg?.label ?? null;
   const isCached    = asset.cached === true;
 
-  // dollar change from sparkline start
-  const sparkFirst = asset.sparkline?.[0]?.v ?? asset.price;
+  // Dollar change: use prevClose from API (accurate) with sparkline as fallback
+  // Do NOT use sparkline[0] — the simulated sparkline starts at the mock price,
+  // not the real previous close, producing a fake massive drop on first load.
+  const sparkFirst = asset.prevClose ?? asset.sparkline?.[0]?.v ?? asset.price;
   const dollarChange = asset.price - sparkFirst;
   const dollarStr = `${dollarChange >= 0 ? "+" : "-"}${asset.unit}${Math.abs(dollarChange).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -1247,9 +1249,11 @@ const useNewsReactionTracker = (assets) => {
       if (!asset) continue;
 
       const change    = asset.change ?? 0;
-      const prevChange= prevRef.current[id] ?? 0;
+      const prevChange= prevRef.current[id] ?? null;  // null = not initialized yet
       const direction = change > 0 ? "up" : "down";
-      const crossed   = Math.abs(change) >= cfg.move && Math.abs(prevChange) < cfg.move;
+      // Only fire after first real data arrives (prevChange !== null)
+      // This prevents false threshold-cross events on every page load
+      const crossed   = prevChange !== null && Math.abs(change) >= cfg.move && Math.abs(prevChange) < cfg.move;
       const dedupKey  = `${id}_${direction}_${tick}`;
 
       if (crossed && !seenRef.current.has(dedupKey)) {
@@ -1420,7 +1424,8 @@ function getActionTag({ regime, riskLevel, setup, btcChange }) {
  */
 const useWhatChanged = (assets, regime) => {
   const [changes, setChanges] = useState([]);
-  const prevRef = useRef({ regime: null, btcChange: 0, vixPrice: 0, setupType: null });
+  // null sentinel = "not initialized yet" — prevents false events on first data arrival
+  const prevRef = useRef({ regime: null, btcChange: null, vixPrice: null, setupType: null });
 
   useEffect(() => {
     if (!assets?.length) return;
@@ -1433,31 +1438,37 @@ const useWhatChanged = (assets, regime) => {
     const vixPrice  = vix?.price  ?? 0;
     const prev      = prevRef.current;
 
-    // BTC move > 1.5%
-    if (Math.abs(btcChange) >= 1.5 && Math.abs(prev.btcChange) < 1.5) {
-      events.push({
-        id: `btc_${now}`, time: now,
-        text: `BTC ${btcChange >= 0 ? "+" : ""}${btcChange.toFixed(1)}%`,
-        color: btcChange >= 0 ? "#00ff88" : "#ff4466",
-      });
-    }
+    // Skip the very first render — prev values are null (not real data yet)
+    // This prevents false "BTC moved" events on every page load
+    const initialized = prev.btcChange !== null;
 
-    // VIX crossing 20 or 25
-    if (prev.vixPrice > 0) {
-      if (vixPrice >= 25 && prev.vixPrice < 25)
-        events.push({ id: `vix25_${now}`, time: now, text: "VIX crossed 25", color: "#ff4466" });
-      else if (vixPrice < 25 && prev.vixPrice >= 25)
-        events.push({ id: `vix25d_${now}`, time: now, text: "VIX fell below 25", color: "#00ff88" });
-      else if (vixPrice >= 20 && prev.vixPrice < 20)
-        events.push({ id: `vix20_${now}`, time: now, text: "VIX crossed 20", color: "#ffd700" });
-      else if (vixPrice < 20 && prev.vixPrice >= 20)
-        events.push({ id: `vix20d_${now}`, time: now, text: "VIX fell below 20", color: "#00ff88" });
-    }
+    if (initialized) {
+      // BTC move > 1.5%
+      if (Math.abs(btcChange) >= 1.5 && Math.abs(prev.btcChange) < 1.5) {
+        events.push({
+          id: `btc_${now}`, time: now,
+          text: `BTC ${btcChange >= 0 ? "+" : ""}${btcChange.toFixed(1)}%`,
+          color: btcChange >= 0 ? "#00ff88" : "#ff4466",
+        });
+      }
 
-    // Regime change
-    if (prev.regime && regime !== prev.regime)
-      events.push({ id: `reg_${now}`, time: now, text: `Regime → ${regime}`,
-        color: regime === "RISK ON" ? "#00ff88" : regime === "RISK OFF" ? "#ff4466" : "#ffd700" });
+      // VIX crossing 20 or 25
+      if (prev.vixPrice > 0) {
+        if (vixPrice >= 25 && prev.vixPrice < 25)
+          events.push({ id: `vix25_${now}`, time: now, text: "VIX crossed 25", color: "#ff4466" });
+        else if (vixPrice < 25 && prev.vixPrice >= 25)
+          events.push({ id: `vix25d_${now}`, time: now, text: "VIX fell below 25", color: "#00ff88" });
+        else if (vixPrice >= 20 && prev.vixPrice < 20)
+          events.push({ id: `vix20_${now}`, time: now, text: "VIX crossed 20", color: "#ffd700" });
+        else if (vixPrice < 20 && prev.vixPrice >= 20)
+          events.push({ id: `vix20d_${now}`, time: now, text: "VIX fell below 20", color: "#00ff88" });
+      }
+
+      // Regime change
+      if (prev.regime && regime !== prev.regime)
+        events.push({ id: `reg_${now}`, time: now, text: `Regime → ${regime}`,
+          color: regime === "RISK ON" ? "#00ff88" : regime === "RISK OFF" ? "#ff4466" : "#ffd700" });
+    }
 
     if (events.length > 0) {
       setChanges(prev => [...events, ...prev].slice(0, 6));

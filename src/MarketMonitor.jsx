@@ -2421,55 +2421,76 @@ export default function MarketMonitor() {
             }}>
             {showSidebar ? "▶" : "◀"}
           </button>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>
+          {/* STATUS STACK — right-aligned terminal style */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5, minWidth: 110 }}>
+
+            {/* Clock */}
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
               {time.toLocaleTimeString("en-US", { hour12: false })}
             </div>
-            <div className="topbar-clock-detail" style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-              <div style={{
-                width: 6, height: 6, borderRadius: "50%",
-                background: error ? "#ffd700" : isMarketOpen() ? "#00ff88" : "#ff4466",
-                animation: isMarketOpen() && !error ? "pulse 2s infinite" : "none",
-              }} />
-              <span style={{ fontSize: 9, color: error ? "#ffd700" : isMarketOpen() ? "#00ff88" : "#ff4466", fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
-                {error ? "API ERR" : isMarketOpen() ? "MARKET OPEN" : "MARKET CLOSED"}
-              </span>
-            </div>
-            {lastUpdated && (
-              <div style={{ fontSize: 9, color: "#333", fontFamily: "'Space Mono', monospace" }}>
-                UPD {lastUpdated.toLocaleTimeString("en-US", { hour12: false })}
-              </div>
-            )}
-            <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 1 }}>
-              <div style={{
-                width: 5, height: 5, borderRadius: "50%",
-                background: wsConnected ? "#00ff88" : "#ffd700",
-                boxShadow: wsConnected ? "0 0 6px #00ff88" : "none",
-                animation: wsConnected ? "pulse 2s infinite" : "none",
-              }} />
-              <span style={{ fontSize: 9, color: isPaused ? "#ffd700" : wsConnected ? "#00ff88" : IS_LOCALHOST ? "#555" : "#ffd700", fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
-                {isPaused ? "PAUSED" : wsConnected ? "WS LIVE" : IS_LOCALHOST ? "POLLING" : "WS OFF"}
-              </span>
-            </div>
-            {/* System status pill */}
+
+            {/* Divider */}
+            <div style={{ width: "100%", height: 1, background: "rgba(255,255,255,0.06)" }} />
+
+            {/* Market Status */}
             {(() => {
-              const s = systemStatus?.status ?? "LIVE";
-              const sColor = s === "LIVE" ? "#00ff88" : s === "DEGRADED" ? "#ffd700" : "#ff4466";
-              const sBg    = s === "LIVE" ? "rgba(0,255,136,0.08)" : s === "DEGRADED" ? "rgba(255,215,0,0.1)" : "rgba(255,68,102,0.12)";
-              if (s === "LIVE") return null; // only show when not fully live
+              const open   = isMarketOpen();
+              const color  = error ? "#ffd700" : open ? "#00ff88" : "#ff4466";
+              const label  = error ? "API ERR" : open ? "MARKET OPEN" : "MARKET CLOSED";
               return (
-                <div style={{
-                  marginTop: 2,
-                  fontSize: 8, padding: "1px 6px", borderRadius: 2,
-                  background: sBg, color: sColor,
-                  fontFamily: "'Space Mono', monospace", letterSpacing: 1,
-                  border: `1px solid ${sColor}44`,
-                  textAlign: "center",
-                }} title={`${systemStatus?.errorCount ?? 0}/${systemStatus?.totalTracked ?? 0} assets on fallback`}>
-                  SYS {s}
+                <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end" }}>
+                  <span style={{ fontSize: 9, color, fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>{label}</span>
+                  <div style={{
+                    width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
+                    background: color,
+                    boxShadow: open && !error ? `0 0 6px ${color}` : "none",
+                    animation: open && !error ? "pulse 2s infinite" : "none",
+                  }} />
                 </div>
               );
             })()}
+
+            {/* System Status — single line, priority: OFFLINE > DEGRADED > LIVE */}
+            {(() => {
+              const raw    = systemStatus?.status ?? "LIVE";
+              // isPaused overrides to show PAUSED instead of system status
+              const s      = isPaused ? "PAUSED" : raw;
+              const color  = s === "PAUSED"   ? "#ffd700"
+                           : s === "LIVE"     ? "#00ff88"
+                           : s === "DEGRADED" ? "#ffd700"
+                           :                   "#ff4466";
+              // WS dot: green=active, gray=localhost polling, yellow=off
+              const wsColor = wsConnected ? "#00ff88" : IS_LOCALHOST ? "#444" : "#ffd700";
+              const wsTitle = wsConnected ? "WebSocket active" : IS_LOCALHOST ? "Polling mode" : "WebSocket off";
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end" }}>
+                  <span style={{ fontSize: 9, color, fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
+                    {s === "PAUSED"   ? "PAUSED"
+                   : s === "LIVE"    ? "LIVE"
+                   : s === "DEGRADED"? "DEGRADED"
+                   :                  "OFFLINE"}
+                  </span>
+                  {/* WS dot replaces "WS LIVE" text */}
+                  <div
+                    title={wsTitle}
+                    style={{
+                      width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
+                      background: wsColor,
+                      boxShadow: wsConnected ? "0 0 5px #00ff88" : "none",
+                      animation: wsConnected ? "pulse 2s infinite" : "none",
+                    }}
+                  />
+                </div>
+              );
+            })()}
+
+            {/* Last updated — subtle, only when available */}
+            {lastUpdated && (
+              <div style={{ fontSize: 8, color: "#333", fontFamily: "'Space Mono', monospace" }}>
+                {lastUpdated.toLocaleTimeString("en-US", { hour12: false })}
+              </div>
+            )}
+
           </div>
         </div>
       </header>

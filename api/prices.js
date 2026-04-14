@@ -3,8 +3,9 @@
 // Architecture: cache-first → scored source chain → confidence rating → fallback
 
 // ─── Environment ──────────────────────────────────────────────────
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY || "";
-const FMP_KEY     = process.env.FMP_API_KEY     || "";
+const FINNHUB_KEY    = process.env.FINNHUB_API_KEY    || "";
+const FMP_KEY        = process.env.FMP_API_KEY        || "";
+const MARKETSTACK_KEY = process.env.MARKETSTACK_API_KEY || "7quxwtveJwSF2UW92xaNFwoxNTJl9BL8";
 
 // ─────────────────────────────────────────────────────────────────
 // SOURCE REGISTRY
@@ -30,8 +31,16 @@ const SOURCES = {
     maxAgeMs:      5 * 60 * 1000, // Slightly more lenient — updates less often
     maxDeviationPct: 15,
   },
+  Marketstack: {
+    priority:      3,         // EOD fallback — no real-time, but reliable daily close
+    reliability:   "medium",  // Data from Tiingo via Marketstack
+    maxAgeMs:      12 * 60 * 60 * 1000, // 12h — EOD data, not real-time
+    maxDeviationPct: 15,
+    // NOTE: returns EOD close prices only, not intraday. Used when Finnhub+FMP fail.
+    // Rate limit: 5 req/sec. Free tier: 100/mo. Use sparingly.
+  },
   Yahoo: {
-    priority:      3,
+    priority:      4,
     reliability:   "medium",  // Free, no quota, but can cache stale data
     maxAgeMs:      5 * 60 * 1000,
     maxDeviationPct: 15,
@@ -91,8 +100,9 @@ function getCacheEntry(id) {
 // RATE LIMITER
 // ─────────────────────────────────────────────────────────────────
 const _rateLimiter = {
-  finnhub: { calls: [], limit: 55 },
-  fmp:     { calls: [], limit: 8  },
+  finnhub:     { calls: [], limit: 55 },  // 55/min (hard limit: 60)
+  fmp:         { calls: [], limit: 8  },  // 8/min on free tier
+  marketstack: { calls: [], limit: 4  },  // 5 req/sec max, we self-limit to 4/min conservatively
 };
 
 function recordCall(source) {
@@ -118,8 +128,9 @@ function isNearLimit(source) {
 function getRateLimitStatus() {
   const now = Date.now();
   return {
-    finnhub: { calls: _rateLimiter.finnhub.calls.filter(t => now - t < 60 * 1000).length, limit: _rateLimiter.finnhub.limit },
-    fmp:     { calls: _rateLimiter.fmp.calls.filter(t => now - t < 60 * 1000).length,     limit: _rateLimiter.fmp.limit     },
+    finnhub:     { calls: _rateLimiter.finnhub.calls.filter(t => now - t < 60 * 1000).length,     limit: _rateLimiter.finnhub.limit     },
+    fmp:         { calls: _rateLimiter.fmp.calls.filter(t => now - t < 60 * 1000).length,         limit: _rateLimiter.fmp.limit         },
+    marketstack: { calls: _rateLimiter.marketstack.calls.filter(t => now - t < 60 * 1000).length, limit: _rateLimiter.marketstack.limit },
   };
 }
 
@@ -133,6 +144,10 @@ function isMarketOpen() {
 }
 
 // ─── Normalize to standard shape ─────────────────────────────────
+// percentChange is always a % relative to the period baseline:
+//   Crypto (Binance): rolling 24h from openPrice
+//   Equities/Futures (Finnhub/FMP/Yahoo): vs previous close (TODAY)
+// The `change` field here is the dollar amount — UI should use percentChange for display.
 function normalize(symbol, raw, source) {
   return {
     symbol,
@@ -279,6 +294,60 @@ async function fetchFromFMP(symbol) {
   };
 }
 
+async function fetchFromMarketstack(symbol) {
+  if (!MARKETSTACK_KEY)        throw new Error("No Marketstack key");
+  if (isNearLimit("marketstack")) throw new Error("Marketstack rate limit — throttling");
+
+  // Marketstack v2 EOD — returns last 2 trading days so we can compute % change
+  // Fields: open, high, low, close, volume, adj_close, symbol, date
+  // No real-time price — use adj_close as current price (EOD only)
+  const res = await fetch(
+    `https://api.marketstack.com/v2/eod?access_key=${MARKETSTACK_KEY}&symbols=${encodeURIComponent(symbol)}&limit=2`,
+    { headers: { "Accept": "application/json" } }
+  );
+  if (!res.ok) throw new Error(`Marketstack HTTP ${res.status} for ${symbol}`);
+
+  const data = await res.json();
+  if (data.error) throw new Error(`Marketstack error: ${data.error.message}`);
+
+  const records = data.data;
+  if (!Array.isArray(records) || records.length === 0)
+    throw new Error(`Marketstack empty for ${symbol}`);
+
+  const today     = records[0];   // most recent EOD (sorted DESC by default)
+  const yesterday = records[1];   // previous trading day
+
+  const price     = parseFloat(parseFloat(today.adj_close ?? today.close).toFixed(2));
+  if (!price || price === 0) throw new Error(`Marketstack zero price for ${symbol}`);
+
+  const prevClose = yesterday
+    ? parseFloat(parseFloat(yesterday.adj_close ?? yesterday.close).toFixed(2))
+    : price;
+
+  // Compute % change from previous close — Marketstack doesn't provide it directly
+  const dollarChange  = parseFloat((price - prevClose).toFixed(2));
+  const percentChange = prevClose > 0
+    ? parseFloat(((price - prevClose) / prevClose * 100).toFixed(2))
+    : 0;
+
+  recordCall("marketstack");
+  console.log(`[Marketstack] ${symbol} | close=${price} | prevClose=${prevClose} | ${percentChange}% | date=${today.date}`);
+
+  // Marketstack EOD date — use end-of-day timestamp (not current time)
+  // This correctly signals to scoreAndValidate that this is EOD data
+  const eodTimestamp = new Date(today.date).toISOString();
+
+  return {
+    price,
+    percentChange,
+    change:        dollarChange,
+    prevClose,
+    marketState:   "CLOSED",   // EOD data — market was closed when this was recorded
+    _source:       "Marketstack",
+    timestamp:     eodTimestamp,
+  };
+}
+
 async function fetchFromYahoo(symbol) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d`;
   const res = await fetch(url, {
@@ -375,36 +444,40 @@ function getFetchChain(id) {
     BTC: [{ name: "Binance", fn: () => fetchFromBinance("BTCUSDT") }],
     ETH: [{ name: "Binance", fn: () => fetchFromBinance("ETHUSDT") }],
     SPY: [
-      { name: "Finnhub", fn: () => fetchFromFinnhub("SPY")   },
-      { name: "FMP",     fn: () => fetchFromFMP("SPY")       },
-      { name: "Yahoo",   fn: () => fetchFromYahoo("SPY")     },
+      { name: "Finnhub",     fn: () => fetchFromFinnhub("SPY")            },
+      { name: "FMP",         fn: () => fetchFromFMP("SPY")                },
+      { name: "Marketstack", fn: () => fetchFromMarketstack("SPY")        },
+      { name: "Yahoo",       fn: () => fetchFromYahoo("SPY")              },
     ],
     QQQ: [
-      { name: "Finnhub", fn: () => fetchFromFinnhub("QQQ")   },
-      { name: "FMP",     fn: () => fetchFromFMP("QQQ")       },
-      { name: "Yahoo",   fn: () => fetchFromYahoo("QQQ")     },
+      { name: "Finnhub",     fn: () => fetchFromFinnhub("QQQ")            },
+      { name: "FMP",         fn: () => fetchFromFMP("QQQ")                },
+      { name: "Marketstack", fn: () => fetchFromMarketstack("QQQ")        },
+      { name: "Yahoo",       fn: () => fetchFromYahoo("QQQ")              },
     ],
     WTI: [
-      { name: "Finnhub", fn: () => fetchFromFinnhub("USOIL") },
-      { name: "Yahoo",   fn: () => fetchFromYahoo("CL=F")    },
-      { name: "FMP",     fn: () => fetchFromFMP("USOIL")     },
+      { name: "Finnhub",     fn: () => fetchFromFinnhub("USOIL")          },
+      { name: "Yahoo",       fn: () => fetchFromYahoo("CL=F")             },
+      { name: "FMP",         fn: () => fetchFromFMP("USOIL")              },
+      { name: "Marketstack", fn: () => fetchFromMarketstack("USOIL")      },
     ],
     TNX: [
-      { name: "Finnhub", fn: () => fetchFromFinnhub("US10Y") },
-      { name: "Yahoo",   fn: () => fetchFromYahoo("^TNX")    },
+      { name: "Finnhub",     fn: () => fetchFromFinnhub("US10Y")          },
+      { name: "Yahoo",       fn: () => fetchFromYahoo("^TNX")             },
     ],
     DXY: [
-      { name: "Finnhub", fn: () => fetchFromFinnhub("DXY")         },
-      { name: "Yahoo",   fn: () => fetchFromYahoo("DX-Y.NYB")      },
+      { name: "Finnhub",     fn: () => fetchFromFinnhub("DXY")            },
+      { name: "Yahoo",       fn: () => fetchFromYahoo("DX-Y.NYB")         },
     ],
     VIX: [
-      { name: "FMP",     fn: () => fetchFromFMP("^VIX")            },
-      { name: "Finnhub", fn: () => fetchFromFinnhub("CBOE:VIX")    },
+      { name: "FMP",         fn: () => fetchFromFMP("^VIX")               },
+      { name: "Finnhub",     fn: () => fetchFromFinnhub("CBOE:VIX")       },
     ],
     GOLD: [
-      { name: "Finnhub", fn: () => fetchFromFinnhub("GC1!")        }, // Finnhub continuous futures
-      { name: "Yahoo",   fn: () => fetchFromYahoo("GC=F")          }, // Yahoo gold futures
-      { name: "FMP",     fn: () => fetchFromFMP("GCUSD")           }, // FMP spot gold
+      { name: "Finnhub",     fn: () => fetchFromFinnhub("GC1!")           },
+      { name: "Yahoo",       fn: () => fetchFromYahoo("GC=F")             },
+      { name: "FMP",         fn: () => fetchFromFMP("GCUSD")              },
+      { name: "Marketstack", fn: () => fetchFromMarketstack("XAUUSD")     },
     ],
   };
   return chains[id] ?? null;
@@ -464,7 +537,7 @@ export default async function handler(req, res) {
   const skipVIX    = !marketOpen;
   const rateLimits = getRateLimitStatus();
 
-  console.log(`[/api/prices] ${fetchedAt} | market=${marketOpen ? "OPEN" : "CLOSED"} | finnhub=${rateLimits.finnhub.calls}/${rateLimits.finnhub.limit} | fmp=${rateLimits.fmp.calls}/${rateLimits.fmp.limit}`);
+  console.log(`[/api/prices] ${fetchedAt} | market=${marketOpen ? "OPEN" : "CLOSED"} | finnhub=${rateLimits.finnhub.calls}/${rateLimits.finnhub.limit} | fmp=${rateLimits.fmp.calls}/${rateLimits.fmp.limit} | marketstack=${rateLimits.marketstack.calls}/${rateLimits.marketstack.limit}`);
 
   const ids    = ["BTC", "ETH", "SPY", "QQQ", "WTI", "GOLD", "TNX", "DXY", "VIX"];
   const assets = {};

@@ -340,15 +340,15 @@ const ALERT_SOUNDS = {
 // ASSET META + MOCK DATA
 // ─────────────────────────────────────────────
 const ASSET_META = [
-  { id: "VIX",  label: "VIX",        category: "fear",      unit: "",  vol: 0.04  },
-  { id: "SPY",  label: "S&P 500",    category: "equity",    unit: "$", vol: 0.008 },
-  { id: "QQQ",  label: "Nasdaq",     category: "equity",    unit: "$", vol: 0.01  },
-  { id: "BTC",  label: "Bitcoin",    category: "crypto",    unit: "$", vol: 0.025 },
-  { id: "ETH",  label: "Ethereum",   category: "crypto",    unit: "$", vol: 0.03  },
-  { id: "WTI",  label: "Crude Oil",  category: "commodity", unit: "$", vol: 0.015 },
-  { id: "GOLD", label: "Gold",       category: "commodity", unit: "$", vol: 0.008 },
-  { id: "DXY",  label: "USD Index",  category: "currency",  unit: "",  vol: 0.005 },
-  { id: "TNX",  label: "10Y Yield",  category: "bonds",     unit: "%", vol: 0.008 },
+  { id: "VIX",  label: "VIX",        category: "fear",      unit: "",  vol: 0.04,  changePeriod: "TODAY" },
+  { id: "SPY",  label: "S&P 500",    category: "equity",    unit: "$", vol: 0.008, changePeriod: "TODAY" },
+  { id: "QQQ",  label: "Nasdaq",     category: "equity",    unit: "$", vol: 0.01,  changePeriod: "TODAY" },
+  { id: "BTC",  label: "Bitcoin",    category: "crypto",    unit: "$", vol: 0.025, changePeriod: "24H"   },
+  { id: "ETH",  label: "Ethereum",   category: "crypto",    unit: "$", vol: 0.03,  changePeriod: "24H"   },
+  { id: "WTI",  label: "Crude Oil",  category: "commodity", unit: "$", vol: 0.015, changePeriod: "TODAY" },
+  { id: "GOLD", label: "Gold",       category: "commodity", unit: "$", vol: 0.008, changePeriod: "TODAY" },
+  { id: "DXY",  label: "USD Index",  category: "currency",  unit: "",  vol: 0.005, changePeriod: "TODAY" },
+  { id: "TNX",  label: "10Y Yield",  category: "bonds",     unit: "%", vol: 0.008, changePeriod: "TODAY" },
 ];
 
 const MOCK_PRICES = {
@@ -430,32 +430,90 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
     if (json.systemStatus) _priceCache._systemStatus = json.systemStatus;
     if (typeof json.marketOpen === "boolean") _priceCache._marketOpen = json.marketOpen;
 
+    // ── Frontend validation guard ──────────────────────────────────
+    // Catches any bad data before it reaches _priceCache and poisons the UI.
+    // The backend runs scoreAndValidate() already, but defensive checks here
+    // catch edge cases like 0-prices from cold-start fallbacks.
+    //
+    // Thresholds:
+    //   Crypto  (category="crypto")  : extreme move = >25% (volatile asset)
+    //   Equities/Macro               : extreme move = >15%
+    //   VIX                          : exempt from extreme-move check (VIX can spike 30%+ in a day)
+    const EXTREME_MOVE_CRYPTO  = 25;
+    const EXTREME_MOVE_EQUITY  = 15;
+    const EXEMPT_EXTREME       = new Set(["VIX"]);  // VIX can legitimately spike >15% in a day
+
     Object.entries(data).forEach(([id, val]) => {
-      if (val?.price) {
-        const change = val.percentChange ?? val.change ?? 0;
-        _priceCache[id] = { ...val, change };
-        console.log(`[Price] ${id}: $${val.price} (${change >= 0 ? "+" : ""}${change.toFixed(2)}%) | src=${val.source ?? "?"} | stale=${val.stale ?? false} | fallback=${val.isFallback ?? false}`);
+      const price = val?.price;
+      const pct   = Math.abs(val?.percentChange ?? val?.change ?? 0);
+      const meta  = ASSET_META.find(m => m.id === id);
+
+      // Rule 1: reject null / zero price
+      if (!price || price === 0) {
+        console.warn(`[VALIDATE FE] ${id}: REJECTED — null/zero price (${price})`);
+        return;  // skip write to _priceCache
       }
+
+      // Rule 2: reject extreme moves (unless VIX or already flagged as error/fallback)
+      if (!EXEMPT_EXTREME.has(id) && val?.status !== "error") {
+        const threshold = meta?.category === "crypto" ? EXTREME_MOVE_CRYPTO : EXTREME_MOVE_EQUITY;
+        if (pct > threshold) {
+          console.warn(`[VALIDATE FE] ${id}: REJECTED — extreme move ${pct.toFixed(1)}% > ${threshold}% threshold`);
+          // Don't write — keep last valid value in cache
+          return;
+        }
+      }
+
+      // Rule 3: mark as stale if price hasn't changed in >2 minutes during market hours
+      // (catches frozen feeds that return the same price repeatedly)
+      const prev      = _priceCache[id];
+      const isMktOpen = _priceCache._marketOpen ?? false;
+      let staleFrozen = false;
+      if (isMktOpen && prev?.price === price && prev?.frozenSince) {
+        const frozenMs = Date.now() - prev.frozenSince;
+        if (frozenMs > 2 * 60 * 1000) {
+          staleFrozen = true;
+          console.warn(`[VALIDATE FE] ${id}: FROZEN — price unchanged for ${Math.round(frozenMs/1000)}s during market hours`);
+        }
+      }
+      const frozenSince = (prev?.price === price) ? (prev?.frozenSince ?? Date.now()) : undefined;
+
+      const change = val.percentChange ?? val.change ?? 0;
+      _priceCache[id] = {
+        ...val,
+        change,
+        frozenSince,
+        stale: val.stale || staleFrozen,
+      };
+      console.log(`[Price] ${id}: $${price} (${change >= 0 ? "+" : ""}${change.toFixed(2)}%) | src=${val.source ?? "?"} | stale=${val.stale ?? staleFrozen} | fallback=${val.isFallback ?? false}`);
     });
   } catch (e) {
     console.warn("[fetchAllPrices]", e.message);
   }
 
-  return ASSET_META.map(meta => ({
-    ...meta,
-    price:       parseFloat((_priceCache[meta.id]?.price       ?? MOCK_PRICES[meta.id].price).toFixed(2)),
-    change:      parseFloat((_priceCache[meta.id]?.change      ?? MOCK_PRICES[meta.id].change).toFixed(2)),
-    marketState: _priceCache[meta.id]?.marketState ?? "CLOSED",
-    prevClose:   _priceCache[meta.id]?.prevClose   ?? null,
-    source:      _priceCache[meta.id]?.source      ?? "fallback",
-    timestamp:   _priceCache[meta.id]?.timestamp   ?? null,
-    status:      _priceCache[meta.id]?.status      ?? "valid",
-    confidence:  _priceCache[meta.id]?.confidence  ?? "low",
-    cached:      _priceCache[meta.id]?.cached      ?? false,
-    isFallback:  _priceCache[meta.id]?.isFallback  ?? false,
-    stale:       _priceCache[meta.id]?.stale       ?? false,  // server-computed staleness
-    dataAge:     _priceCache[meta.id]?.dataAge     ?? null,   // ms since data was fetched
-  }));
+  return ASSET_META.map(meta => {
+    const c = _priceCache[meta.id];
+    // Hardened: always resolve to percentChange (%) — never dollar change
+    // percentChange is explicitly set by all sources (Binance/Finnhub/FMP/Yahoo)
+    const pct = parseFloat((c?.percentChange ?? c?.change ?? MOCK_PRICES[meta.id].change).toFixed(2));
+    return {
+      ...meta,
+      price:        parseFloat((c?.price    ?? MOCK_PRICES[meta.id].price).toFixed(2)),
+      change:       pct,          // % — this is what the UI renders everywhere
+      percentChange:pct,          // explicit alias for clarity
+      marketState:  c?.marketState ?? "CLOSED",
+      prevClose:    c?.prevClose   ?? null,
+      source:       c?.source      ?? "fallback",
+      timestamp:    c?.timestamp   ?? null,
+      status:       c?.status      ?? "valid",
+      confidence:   c?.confidence  ?? "low",
+      cached:       c?.cached      ?? false,
+      isFallback:   c?.isFallback  ?? false,
+      stale:        c?.stale       ?? false,
+      dataAge:      c?.dataAge     ?? null,
+      frozenSince:  c?.frozenSince ?? undefined,  // set when price unchanged during market hours
+    };
+  });
 };
 
 // Fear & Greed: Alternative.me (small payload, no CORS issues)
@@ -1302,6 +1360,8 @@ const AssetCard = memo(({ asset, debugMode, timeframe }) => {
   const isStale     = dataStatus === "stale" || asset.stale === true;
   const isDataError = dataStatus === "error";
   const isFallback  = asset.isFallback === true;
+  // Frozen: price hasn't changed during market hours for >2min (detected in fetchAllPrices)
+  const isFrozen    = asset.stale === true && asset.frozenSince != null;
 
   // Confidence — dims card and source label when low
   const confidence    = asset.confidence ?? "high";
@@ -1383,7 +1443,9 @@ const AssetCard = memo(({ asset, debugMode, timeframe }) => {
                 background: "rgba(255,215,0,0.12)", color: "#ffd700",
                 fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
                 border: "1px solid rgba(255,215,0,0.25)", whiteSpace: "nowrap",
-              }}>STALE</span>
+              }} title={isFrozen ? "Price unchanged during market hours" : "Data may be stale"}>
+                {isFrozen ? "FROZEN" : "STALE"}
+              </span>
             ) : showClosed ? (
               <span style={{
                 fontSize: 8, padding: "1px 5px", borderRadius: 2,
@@ -1420,6 +1482,14 @@ const AssetCard = memo(({ asset, debugMode, timeframe }) => {
           </div>
           <div style={{ fontSize: 11, color: isDataError || isStale ? "#555" : color, fontWeight: 700, fontFamily: "'Space Mono', monospace" }}>
             {fmtChange(asset.change)}
+            {/* Period label — 24H for crypto (rolling window), TODAY for equities (vs prev close) */}
+            {!isDataError && !isStale && !showClosed && asset.changePeriod && (
+              <span style={{
+                fontSize: 7, marginLeft: 4, color: "#444",
+                fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+                verticalAlign: "middle",
+              }}>{asset.changePeriod}</span>
+            )}
           </div>
           <div style={{ fontSize: 10, color: isDataError || isStale ? "#444" : color, opacity: 0.65, fontFamily: "'Space Mono', monospace" }}>
             {dollarStr}
@@ -1490,6 +1560,8 @@ const AssetCard = memo(({ asset, debugMode, timeframe }) => {
             <span style={{ color: "#555" }}>stale:</span>{" "}
             <span style={{ color: asset.stale ? "#ff4466" : "#555" }}>{asset.stale ? "yes" : "no"}</span><br />
             <span style={{ color: "#555" }}>age:</span> {asset.dataAge != null ? `${(asset.dataAge/1000).toFixed(0)}s` : "—"} &nbsp;
+            <span style={{ color: "#555" }}>frozen:</span>{" "}
+            <span style={{ color: isFrozen ? "#ffd700" : "#555" }}>{isFrozen ? `${Math.round((Date.now() - asset.frozenSince)/1000)}s` : "no"}</span> &nbsp;
             <span style={{ color: "#555" }}>ts:</span> {asset.timestamp ? new Date(asset.timestamp).toLocaleTimeString() : "fallback"}
           </div>
         </div>

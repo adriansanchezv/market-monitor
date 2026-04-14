@@ -46,11 +46,13 @@ const SOURCES = {
 
 // ─────────────────────────────────────────────────────────────────
 // POLLING TIERS
+// HIGH-tier TTL is 5s so a 12s frontend poll always gets fresh data
+// during the trading session. BTC/ETH are WS-driven so TTL is moot for them.
 // ─────────────────────────────────────────────────────────────────
 const TIERS = {
-  HIGH:   { ttl:  8 * 1000, label: "HIGH"   },
-  MEDIUM: { ttl: 30 * 1000, label: "MEDIUM" },
-  LOW:    { ttl: 60 * 1000, label: "LOW"    },
+  HIGH:   { ttl:  5 * 1000, label: "HIGH"   },   // SPY, QQQ, VIX — needs freshness
+  MEDIUM: { ttl: 20 * 1000, label: "MEDIUM" },   // WTI, GOLD — move slower
+  LOW:    { ttl: 60 * 1000, label: "LOW"    },   // TNX, DXY — macro, slow-moving
 };
 
 const ASSET_TIER = {
@@ -546,11 +548,24 @@ export default async function handler(req, res) {
 
   const systemStatus = computeSystemStatus(assets, ids);
 
+  // Annotate each asset with dataAge (ms since fetch) and stale flag.
+  // Frontend uses this for STALE badges without needing its own clock math.
+  const STALE_THRESHOLD_MS = 60 * 1000;
+  const now = Date.now();
+  for (const id of ids) {
+    if (!assets[id]) continue;
+    const ts = assets[id].timestamp ? new Date(assets[id].timestamp).getTime() : 0;
+    const dataAge = ts > 0 ? now - ts : null;
+    assets[id].dataAge = dataAge;
+    assets[id].stale   = dataAge !== null && dataAge > STALE_THRESHOLD_MS;
+  }
+
   res.status(200).json({
     fetchedAt,
     marketOpen,
     rateLimits,
     systemStatus,
+    staleThresholdMs: STALE_THRESHOLD_MS,
     cacheHits:    ids.filter(id => assets[id]?.cached).length,
     freshFetches: fetchIds.length,
     assets,

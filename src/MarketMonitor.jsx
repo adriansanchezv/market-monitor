@@ -467,10 +467,12 @@ const fetchFearGreed = async () => {
 };
 
 const fetchNews = async () => {
-  if (!USE_REAL_API.NEWS || !API_KEYS.NEWS_API) return MOCK_NEWS;
+  // NewsAPI requires a key — returns mock news if unavailable (CORS blocks browser use anyway)
+  const NEWS_API_KEY = "";  // paste newsapi.org key here to enable live news
+  if (!NEWS_API_KEY) return MOCK_NEWS;
   try {
     const q = encodeURIComponent("federal reserve OR inflation OR oil OR geopolitical OR bitcoin");
-    const res = await fetch(`https://newsapi.org/v2/everything?q=${q}&pageSize=20&sortBy=publishedAt&language=en&apiKey=${API_KEYS.NEWS_API}`);
+    const res = await fetch(`https://newsapi.org/v2/everything?q=${q}&pageSize=20&sortBy=publishedAt&language=en&apiKey=${NEWS_API_KEY}`);
     const data = await res.json();
     return (data.articles || []).map((a, i) => ({
       id: i + 1, headline: a.title, source: a.source?.name ?? "Unknown",
@@ -482,9 +484,10 @@ const fetchNews = async () => {
 };
 
 const fetchSocialFeed = async () => {
-  if (!USE_REAL_API.SOCIAL) return MOCK_SOCIAL;
+  // Social feed via /api/social endpoint (Vercel function) — returns MOCK_SOCIAL if unavailable
   try {
     const res = await fetch("/api/social");
+    if (!res.ok) throw new Error(`${res.status}`);
     return await res.json();
   } catch (e) { return MOCK_SOCIAL; }
 };

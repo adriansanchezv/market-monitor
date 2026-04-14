@@ -2540,28 +2540,42 @@ const PORTFOLIO_POSITIONS = [
 // ─── Pure calculation helper — no UI logic ───────────────────────
 // auxPrices: { TICKER: price } — live prices from momentum/BDC hooks
 // for positions not in the main assets array
-function calcPortfolio(positions, liveAssets, auxPrices = {}) {
+// calcPortfolio — pure calculation, no UI logic
+// auxData: { TICKER: { price, change, source, timestamp, confidence } }
+//   Built from momentumStocks + bdcPrices so portfolio rows carry full data provenance.
+function calcPortfolio(positions, liveAssets, auxData = {}) {
   const rows = positions.map(pos => {
-    // Priority: main asset panel > auxiliary price map > avg cost basis
-    const liveAsset    = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
-    const currentPrice = liveAsset?.price
-      ?? auxPrices[pos.id]
-      ?? pos.avgCost;
+    // Priority: main asset panel (same source as Dashboard) → auxData → avg cost basis
+    const liveAsset = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
+    const aux       = auxData[pos.id];
 
-    const costBasis      = pos.shares * pos.avgCost;
-    const currentValue   = pos.shares * currentPrice;
-    const unrealizedPnL  = currentValue - costBasis;
-    const unrealizedPct  = costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0;
+    const currentPrice  = liveAsset?.price ?? aux?.price ?? pos.avgCost;
+    const priceSource   = liveAsset ? liveAsset.source
+                        : aux       ? aux.source
+                        :             "cost basis";
+    const priceChange   = liveAsset?.change ?? aux?.change ?? null;
+    const priceTs       = liveAsset?.timestamp ?? aux?.timestamp ?? null;
+    const priceConf     = liveAsset?.confidence ?? aux?.confidence ?? "low";
+    const priceStale    = liveAsset?.stale ?? false;
 
-    return { ...pos, currentPrice, costBasis, currentValue, unrealizedPnL, unrealizedPct };
+    const costBasis     = pos.shares * pos.avgCost;
+    const currentValue  = pos.shares * currentPrice;
+    const unrealizedPnL = currentValue - costBasis;
+    const unrealizedPct = costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0;
+
+    return {
+      ...pos,
+      currentPrice, costBasis, currentValue, unrealizedPnL, unrealizedPct,
+      // data provenance — same fields as asset cards
+      priceSource, priceChange, priceTs, priceConf, priceStale,
+    };
   });
 
-  const totalValue    = rows.reduce((s, r) => s + r.currentValue, 0);
-  const totalCost     = rows.reduce((s, r) => s + r.costBasis, 0);
-  const totalPnL      = totalValue - totalCost;
-  const totalPnLPct   = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+  const totalValue  = rows.reduce((s, r) => s + r.currentValue, 0);
+  const totalCost   = rows.reduce((s, r) => s + r.costBasis, 0);
+  const totalPnL    = totalValue - totalCost;
+  const totalPnLPct = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
 
-  // Add allocation % to each row
   const rowsWithAlloc = rows.map(r => ({
     ...r,
     allocation: totalValue > 0 ? (r.currentValue / totalValue) * 100 : 0,
@@ -2574,7 +2588,7 @@ const LIVE_ASSET_IDS = ["BTC", "ETH", "SPY", "QQQ", "VIX", "WTI", "DXY", "TNX"];
 
 const EMPTY_FORM = { id: "", label: "", shares: "", avgCost: "", assetId: "", unit: "$" };
 
-const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {} }) => {
+const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode = false }) => {
   // Load from localStorage or fall back to defaults
   const [positions, setPositions] = useState(() => {
     try {
@@ -2598,22 +2612,34 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {} }) => {
   const fmtPct = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
   const pnlColor = (n) => n >= 0 ? "#00ff88" : "#ff4466";
 
-  // Build auxiliary price map from momentum stocks and BDC prices
-  // so calcPortfolio can use live prices for PLTR, SOFI, ARCC etc.
-  const auxPrices = {
+  // Build auxiliary data map — passes full provenance (source, timestamp, change)
+  // so portfolio rows can show identical data quality indicators as the Dashboard
+  const auxData = {
     ...Object.fromEntries(
       Object.entries(momentumStocks)
         .filter(([, d]) => d?.price)
-        .map(([id, d]) => [id, d.price])
+        .map(([id, d]) => [id, {
+          price:      d.price,
+          change:     d.change ?? null,
+          source:     "Yahoo",
+          timestamp:  d.lastFetch?.toISOString?.() ?? null,
+          confidence: "medium",
+        }])
     ),
     ...Object.fromEntries(
       Object.entries(bdcPrices)
         .filter(([, d]) => d?.price)
-        .map(([id, d]) => [id, d.price])
+        .map(([id, d]) => [id, {
+          price:      d.price,
+          change:     d.change ?? null,
+          source:     "Yahoo",
+          timestamp:  null,
+          confidence: "medium",
+        }])
     ),
   };
 
-  const { rows, totalValue, totalPnL, totalPnLPct } = calcPortfolio(positions, assets, auxPrices);
+  const { rows, totalValue, totalPnL, totalPnLPct } = calcPortfolio(positions, assets, auxData);
 
   // ── Form handlers ─────────────────────────────────────────────
   const openAdd = () => {
@@ -2798,8 +2824,39 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {} }) => {
               <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{row.id}</div>
               <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{row.shares} shares</div>
             </div>
-            <div style={{ fontSize: 12, color: "#ccc", fontFamily: "'Space Mono', monospace" }}>
-              ${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <div>
+              <div style={{
+                fontSize: 12, fontFamily: "'Space Mono', monospace",
+                color: row.priceStale ? "#888" : "#ccc",
+              }}>
+                ${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              {/* Source + change badge — same style as asset cards */}
+              <div style={{ display: "flex", gap: 4, marginTop: 2, alignItems: "center" }}>
+                {row.priceChange != null && (
+                  <span style={{
+                    fontSize: 9, color: row.priceChange >= 0 ? "#00ff88" : "#ff4466",
+                    fontFamily: "'Space Mono', monospace",
+                  }}>
+                    {row.priceChange >= 0 ? "+" : ""}{row.priceChange.toFixed(2)}%
+                  </span>
+                )}
+                {row.priceStale && (
+                  <span style={{
+                    fontSize: 7, padding: "1px 3px", borderRadius: 2,
+                    background: "rgba(255,215,0,0.1)", color: "#ffd700",
+                    fontFamily: "'Space Mono', monospace",
+                    border: "1px solid rgba(255,215,0,0.2)",
+                  }}>STALE</span>
+                )}
+              </div>
+              {/* Debug mode: source + timestamp */}
+              {debugMode && row.priceSource && (
+                <div style={{ fontSize: 8, color: "#00aaff", fontFamily: "'Space Mono', monospace", marginTop: 1 }}>
+                  {row.priceSource}
+                  {row.priceTs && ` · ${new Date(row.priceTs).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`}
+                </div>
+              )}
             </div>
             <div style={{ fontSize: 12, fontWeight: 600, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.currentValue)}</div>
             <div className="portfolio-col-hide" style={{ fontSize: 12, color: "#666", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.costBasis)}</div>
@@ -2839,7 +2896,7 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {} }) => {
       )}
 
       <div style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace", padding: "2px 4px" }}>
-        * Positions saved to browser. BTC/ETH use live prices. Other tickers use mock prices until FMP equity is enabled.
+        BTC/ETH/SPY/QQQ via Dashboard feed · SOFI/PLTR/ZETA via Yahoo · ARCC/OBDC via Yahoo · Others use cost basis · Enable DEBUG for source details
       </div>
     </div>
   );
@@ -4558,6 +4615,7 @@ export default function MarketMonitor() {
               assets={assets}
               momentumStocks={momentumStocks}
               bdcPrices={bdcPrices}
+              debugMode={debugMode}
             />
           )}
 

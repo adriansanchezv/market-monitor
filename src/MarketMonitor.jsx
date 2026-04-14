@@ -534,20 +534,18 @@ async function fetchCryptoBaselines() {
  * Returns array of { v: closePrice, t: openTime } — matches sparkline format.
  * Falls back to null on any error so caller can use generated sparkline instead.
  */
-async function fetchCryptoKlines(symbol, limit = 24) {
+async function fetchCryptoKlines(symbol, interval = "1h", limit = 24) {
   try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=${limit}`;
+    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`${res.status}`);
     const candles = await res.json();
-    // Candle format: [openTime, open, high, low, close, volume, ...]
-    // Index 4 = close price, index 0 = open time (ms)
     return candles.map(c => ({
       v: parseFloat(parseFloat(c[4]).toFixed(2)),
-      t: c[0],  // openTime ms — used for tooltip timestamps
+      t: c[0],
     }));
   } catch (e) {
-    console.warn(`[klines] ${symbol}: ${e.message}`);
+    console.warn(`[klines] ${symbol} ${interval}: ${e.message}`);
     return null;
   }
 }
@@ -569,12 +567,8 @@ async function fetchKlinesForTimeframe(tf) {
   const cfg = TIMEFRAMES[tf];
   if (!cfg) return {};
   const [btc, eth] = await Promise.all([
-    fetchCryptoKlines(`BTCUSDT`, cfg.limit).then(data =>
-      data ? data.map(k => ({ ...k })) : null
-    ).catch(() => null),
-    fetchCryptoKlines(`ETHUSDT`, cfg.limit).then(data =>
-      data ? data.map(k => ({ ...k })) : null
-    ).catch(() => null),
+    fetchCryptoKlines("BTCUSDT", cfg.interval, cfg.limit).catch(() => null),
+    fetchCryptoKlines("ETHUSDT", cfg.interval, cfg.limit).catch(() => null),
   ]);
   return { BTC: btc, ETH: eth };
 }
@@ -640,7 +634,14 @@ const useMarketData = (isPaused = false) => {
     _priceCache[id] = normalized;
     setAssets(prev => prev.map(asset => {
       if (asset.id !== id) return asset;
-      const newSparkline = [...asset.sparkline.slice(1), { v: normalized.price, t: Date.now() }];
+      // For WS ticks, update the LAST sparkline point with the new price
+      // rather than rolling the entire array. Rolling would exhaust a 12-point
+      // 1H sparkline in minutes. The array only rolls when fetchAndUpdate
+      // adds a genuinely new candle period.
+      const spark = asset.sparkline;
+      const newSparkline = spark.length > 0
+        ? [...spark.slice(0, -1), { v: normalized.price, t: Date.now() }]
+        : [{ v: normalized.price, t: Date.now() }];
       return {
         ...asset,
         price:       normalized.price,
@@ -751,8 +752,8 @@ const useMarketData = (isPaused = false) => {
     // Both save to localStorage so next reload is instant with no flicker.
     Promise.all([
       fetchCryptoBaselines(),
-      fetchCryptoKlines("BTCUSDT", 24),
-      fetchCryptoKlines("ETHUSDT", 24),
+      fetchCryptoKlines("BTCUSDT", TIMEFRAMES[DEFAULT_TIMEFRAME].interval, TIMEFRAMES[DEFAULT_TIMEFRAME].limit),
+      fetchCryptoKlines("ETHUSDT", TIMEFRAMES[DEFAULT_TIMEFRAME].interval, TIMEFRAMES[DEFAULT_TIMEFRAME].limit),
     ]).then(([baselines, btcKlines, ethKlines]) => {
       if (Object.keys(baselines).length === 0) return;
 
@@ -794,6 +795,11 @@ const useMarketData = (isPaused = false) => {
 
       // Prime _priceCache with klines so WS knows the real sparkline history
       Object.entries(baselines).forEach(([id, b]) => { _priceCache[id] = b; });
+
+      // Seed klinesCache so the timeframe effect doesn't refetch what we just loaded
+      if (btcKlines || ethKlines) {
+        klinesCache.current[DEFAULT_TIMEFRAME] = { BTC: btcKlines, ETH: ethKlines };
+      }
     });
 
     // Step 2: WS + polling start — WS will push onto real sparkline from here

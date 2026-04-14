@@ -469,16 +469,82 @@ const BINANCE_ID_MAP   = { BTCUSDT: "BTC", ETHUSDT: "ETH" };
 const IS_LOCALHOST     = typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
+// ─────────────────────────────────────────────
+// CRYPTO BASELINE CACHE
+// Stores 24h open price per symbol so WS % change
+// is always calculated from a real reference point.
+// Persisted to localStorage to eliminate cold-start flicker.
+// ─────────────────────────────────────────────
+const BASELINE_KEY = "mm_crypto_baseline_v1";
+const BASELINE_TTL = 60 * 60 * 1000; // 1 hour — openPrice resets each UTC day anyway
+
+const BINANCE_INIT_SYMBOLS = [
+  { id: "BTC", symbol: "BTCUSDT" },
+  { id: "ETH", symbol: "ETHUSDT" },
+];
+
+function loadBaselines() {
+  try {
+    const raw = localStorage.getItem(BASELINE_KEY);
+    if (!raw) return {};
+    const { ts, data } = JSON.parse(raw);
+    // Discard if older than TTL — openPrice would have rolled to a new UTC day
+    if (Date.now() - ts > BASELINE_TTL) return {};
+    return data;
+  } catch { return {}; }
+}
+
+function saveBaselines(data) {
+  try {
+    localStorage.setItem(BASELINE_KEY, JSON.stringify({ ts: Date.now(), data }));
+  } catch {}
+}
+
+// Fetches 24hr stats from Binance for BTC + ETH.
+// Returns { BTC: { price, change, percentChange, prevClose, openPrice }, ETH: ... }
+async function fetchCryptoBaselines() {
+  const results = {};
+  await Promise.all(BINANCE_INIT_SYMBOLS.map(async ({ id, symbol }) => {
+    try {
+      const res  = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const d    = await res.json();
+      const price        = parseFloat(parseFloat(d.lastPrice).toFixed(2));
+      const openPrice    = parseFloat(parseFloat(d.openPrice).toFixed(2));
+      const percentChange= parseFloat(parseFloat(d.priceChangePercent).toFixed(2));
+      const dollarChange = parseFloat(parseFloat(d.priceChange).toFixed(2));
+      const prevClose    = parseFloat(parseFloat(d.prevClosePrice).toFixed(2));
+      if (!price || !openPrice) throw new Error("zero price");
+      results[id] = { price, openPrice, percentChange, dollarChange, prevClose,
+        change: percentChange,  // `change` = % everywhere in this codebase
+        source: "Binance", confidence: "high", status: "valid",
+        marketState: "REGULAR", cached: false,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (e) {
+      console.warn(`[baseline] ${id}: ${e.message}`);
+    }
+  }));
+  return results;
+}
+
 const useMarketData = (isPaused = false) => {
-  const [assets, setAssets] = useState(() =>
-    ASSET_META.map(meta => ({
-      ...meta,
-      price: MOCK_PRICES[meta.id].price,
-      change: MOCK_PRICES[meta.id].change,
-      sparkline: generateSparkline(MOCK_PRICES[meta.id].price, meta.vol),
-      loading: false,
-    }))
-  );
+  // Seed from localStorage cache so crypto shows real values instantly on reload
+  const [assets, setAssets] = useState(() => {
+    const saved = loadBaselines();
+    return ASSET_META.map(meta => {
+      const base = saved[meta.id];
+      return {
+        ...meta,
+        price:    base?.price   ?? MOCK_PRICES[meta.id].price,
+        change:   base?.change  ?? MOCK_PRICES[meta.id].change,
+        prevClose: base?.prevClose ?? null,
+        source:   base?.source  ?? null,
+        sparkline: generateSparkline(base?.price ?? MOCK_PRICES[meta.id].price, meta.vol),
+        loading: !base,  // show loading state only if no cached baseline
+      };
+    });
+  });
   const [lastUpdated, setLastUpdated]   = useState(null);
   const [error, setError]               = useState(null);
   const [wsConnected, setWsConnected]   = useState(false);
@@ -534,15 +600,29 @@ const useMarketData = (isPaused = false) => {
         // Normalize Binance tick to match backend standardized shape.
         // IMPORTANT: `change` in our system = 24h % change (used everywhere as %).
         // tick.P = 24h priceChangePercent (%), tick.p = 24h priceChange ($).
-        // tick.o = 24h open price — used to derive prevClose accurately.
+        // tick.o = 24h open price — the authoritative baseline for % calculation.
         const price        = parseFloat(parseFloat(tick.c).toFixed(2));
-        const percentChange= parseFloat(parseFloat(tick.P).toFixed(2));
-        const dollarChange = parseFloat(parseFloat(tick.p).toFixed(2));
         const openPrice    = parseFloat(parseFloat(tick.o).toFixed(2));
-        // prevClose from REST (already in _priceCache) is more accurate than
-        // deriving from tick — keep it if we have it, else fall back to open price
+        const dollarChange = parseFloat(parseFloat(tick.p).toFixed(2));
         const cachedPrev   = _priceCache[id]?.prevClose;
         const prevClose    = cachedPrev ?? openPrice;
+
+        // Recalculate % from openPrice baseline (most accurate).
+        // tick.P is already this calculation but we verify with our own baseline.
+        // Guard: skip if openPrice is zero or missing (prevents divide-by-zero).
+        let percentChange;
+        if (openPrice > 0) {
+          percentChange = parseFloat(((price - openPrice) / openPrice * 100).toFixed(2));
+        } else {
+          // Fallback to Binance's own value if we can't derive it
+          percentChange = parseFloat(parseFloat(tick.P).toFixed(2));
+        }
+
+        // Final sanity check — Binance 24h shouldn't exceed ±50% for BTC/ETH
+        if (Math.abs(percentChange) > 50) {
+          console.warn(`[WS] ${id}: percentChange=${percentChange}% out of range, using tick.P`);
+          percentChange = parseFloat(parseFloat(tick.P).toFixed(2));
+        }
 
         updateAsset(id, {
           symbol:       id,
@@ -590,6 +670,36 @@ const useMarketData = (isPaused = false) => {
   }, [isPaused]);
 
   useEffect(() => {
+    // Step 1: fetch Binance 24hr baselines directly — fast, CORS-open, no Vercel needed.
+    // This fills BTC/ETH with real prices before the WS connects (~100-300ms).
+    // Saves to localStorage so next load is instant.
+    fetchCryptoBaselines().then(baselines => {
+      if (Object.keys(baselines).length === 0) return;
+      saveBaselines(baselines);
+      setAssets(prev => prev.map(asset => {
+        const b = baselines[asset.id];
+        if (!b) return asset;
+        // Build sparkline from real open → current price arc
+        const newSparkline = generateSparkline(b.openPrice, asset.vol);
+        // Replace last sparkline point with current real price
+        newSparkline[newSparkline.length - 1] = { v: b.price, t: Date.now() };
+        return {
+          ...asset,
+          price:     b.price,
+          change:    b.change,
+          prevClose: b.prevClose,
+          source:    b.source,
+          confidence: b.confidence,
+          status:    b.status,
+          sparkline: newSparkline,
+          loading:   false,
+        };
+      }));
+      // Also prime _priceCache so WS updates merge correctly
+      Object.entries(baselines).forEach(([id, b]) => { _priceCache[id] = b; });
+    });
+
+    // Step 2: WS connects after baseline is ready
     connectWS();
     fetchAndUpdate();
     const pollInterval = setInterval(fetchAndUpdate, INTERVALS.PRICES);

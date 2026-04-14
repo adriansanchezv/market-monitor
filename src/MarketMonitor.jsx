@@ -4,7 +4,14 @@ import { LineChart, Line, ResponsiveContainer, Tooltip, AreaChart, Area } from "
 // ─────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────
-const INTERVALS = { PRICES: 35000, NEWS: 60000, SOCIAL: 120000 };
+const INTERVALS = {
+  PRICES_OPEN:   12 * 1000,   // 12s during market hours — faster than 5s TTL on backend
+  PRICES_CLOSED: 60 * 1000,   // 60s when market is closed — save quota
+  NEWS:          60 * 1000,
+  SOCIAL:       120 * 1000,
+  MOMENTUM_OPEN:  45 * 1000,  // 45s for stock momentum during session
+  MOMENTUM_CLOSED: 5 * 60 * 1000, // 5min when closed
+};
 
 // ─────────────────────────────────────────────
 // CENTRAL MARKET DATA STORE
@@ -419,14 +426,15 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
 
     const data = json.assets ?? json;
 
-    // Persist systemStatus on the cache so the hook can surface it
+    // Persist systemStatus and marketOpen on cache so hooks can read it
     if (json.systemStatus) _priceCache._systemStatus = json.systemStatus;
+    if (typeof json.marketOpen === "boolean") _priceCache._marketOpen = json.marketOpen;
 
     Object.entries(data).forEach(([id, val]) => {
       if (val?.price) {
         const change = val.percentChange ?? val.change ?? 0;
         _priceCache[id] = { ...val, change };
-        console.log(`[Price] ${id}: $${val.price} (${change >= 0 ? "+" : ""}${change.toFixed(2)}%) | src=${val.source ?? "?"} | conf=${val.confidence ?? "?"} | fallback=${val.isFallback ?? false}`);
+        console.log(`[Price] ${id}: $${val.price} (${change >= 0 ? "+" : ""}${change.toFixed(2)}%) | src=${val.source ?? "?"} | stale=${val.stale ?? false} | fallback=${val.isFallback ?? false}`);
       }
     });
   } catch (e) {
@@ -445,6 +453,8 @@ const fetchAllPrices = async ({ skipVIX = false } = {}) => {
     confidence:  _priceCache[meta.id]?.confidence  ?? "low",
     cached:      _priceCache[meta.id]?.cached      ?? false,
     isFallback:  _priceCache[meta.id]?.isFallback  ?? false,
+    stale:       _priceCache[meta.id]?.stale       ?? false,  // server-computed staleness
+    dataAge:     _priceCache[meta.id]?.dataAge     ?? null,   // ms since data was fetched
   }));
 };
 
@@ -823,12 +833,30 @@ const useMarketData = (isPaused = false) => {
       }
     });
 
-    // Step 2: WS + polling start — WS will push onto real sparkline from here
+    // Step 2: WS + adaptive polling start
+    // Poll faster during market hours (12s) — server TTL is 5s so data is always fresh
+    // Poll slower when closed (60s) — saves Finnhub quota, nothing changes anyway
     connectWS();
     fetchAndUpdate();
-    const pollInterval = setInterval(fetchAndUpdate, INTERVALS.PRICES);
+
+    const schedulePoll = () => {
+      const interval = getMarketStatus().isOpen
+        ? INTERVALS.PRICES_OPEN
+        : INTERVALS.PRICES_CLOSED;
+      return setInterval(fetchAndUpdate, interval);
+    };
+
+    let pollInterval = schedulePoll();
+
+    // Re-evaluate interval every 5 minutes (handles market open/close transitions)
+    const intervalCheck = setInterval(() => {
+      clearInterval(pollInterval);
+      pollInterval = schedulePoll();
+    }, 5 * 60 * 1000);
+
     return () => {
       clearInterval(pollInterval);
+      clearInterval(intervalCheck);
       clearTimeout(wsReconnectRef.current);
       if (abortRef.current) abortRef.current.abort();
       if (wsRef.current) wsRef.current.close();
@@ -1268,7 +1296,7 @@ const AssetCard = memo(({ asset, debugMode, timeframe }) => {
 
   // Status — stale or error override normal display
   const dataStatus  = asset.status ?? "valid";
-  const isStale     = dataStatus === "stale";
+  const isStale     = dataStatus === "stale" || asset.stale === true;
   const isDataError = dataStatus === "error";
   const isFallback  = asset.isFallback === true;
 
@@ -1455,7 +1483,10 @@ const AssetCard = memo(({ asset, debugMode, timeframe }) => {
               {confidence}
             </span> &nbsp;
             <span style={{ color: "#555" }}>cached:</span>{" "}
-            <span style={{ color: isCached ? "#ffd700" : "#555" }}>{isCached ? "yes" : "no"}</span><br />
+            <span style={{ color: isCached ? "#ffd700" : "#555" }}>{isCached ? "yes" : "no"}</span> &nbsp;
+            <span style={{ color: "#555" }}>stale:</span>{" "}
+            <span style={{ color: asset.stale ? "#ff4466" : "#555" }}>{asset.stale ? "yes" : "no"}</span><br />
+            <span style={{ color: "#555" }}>age:</span> {asset.dataAge != null ? `${(asset.dataAge/1000).toFixed(0)}s` : "—"} &nbsp;
             <span style={{ color: "#555" }}>ts:</span> {asset.timestamp ? new Date(asset.timestamp).toLocaleTimeString() : "fallback"}
           </div>
         </div>
@@ -2431,18 +2462,16 @@ const PORTFOLIO_POSITIONS = [
 ];
 
 // Mock current prices for positions not tracked in the main asset panel
-const PORTFOLIO_MOCK_PRICES = {
-  PLTR: 25.18,
-  SOFI: 9.42,
-  ARCC: 21.34,
-};
-
 // ─── Pure calculation helper — no UI logic ───────────────────────
-function calcPortfolio(positions, liveAssets) {
+// auxPrices: { TICKER: price } — live prices from momentum/BDC hooks
+// for positions not in the main assets array
+function calcPortfolio(positions, liveAssets, auxPrices = {}) {
   const rows = positions.map(pos => {
-    // Use live price from asset panel if available, else mock
-    const liveAsset = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
-    const currentPrice = liveAsset?.price ?? PORTFOLIO_MOCK_PRICES[pos.id] ?? pos.avgCost;
+    // Priority: main asset panel > auxiliary price map > avg cost basis
+    const liveAsset    = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
+    const currentPrice = liveAsset?.price
+      ?? auxPrices[pos.id]
+      ?? pos.avgCost;
 
     const costBasis      = pos.shares * pos.avgCost;
     const currentValue   = pos.shares * currentPrice;
@@ -2470,7 +2499,7 @@ const LIVE_ASSET_IDS = ["BTC", "ETH", "SPY", "QQQ", "VIX", "WTI", "DXY", "TNX"];
 
 const EMPTY_FORM = { id: "", label: "", shares: "", avgCost: "", assetId: "", unit: "$" };
 
-const PortfolioPanel = ({ assets }) => {
+const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {} }) => {
   // Load from localStorage or fall back to defaults
   const [positions, setPositions] = useState(() => {
     try {
@@ -2494,7 +2523,22 @@ const PortfolioPanel = ({ assets }) => {
   const fmtPct = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
   const pnlColor = (n) => n >= 0 ? "#00ff88" : "#ff4466";
 
-  const { rows, totalValue, totalPnL, totalPnLPct } = calcPortfolio(positions, assets);
+  // Build auxiliary price map from momentum stocks and BDC prices
+  // so calcPortfolio can use live prices for PLTR, SOFI, ARCC etc.
+  const auxPrices = {
+    ...Object.fromEntries(
+      Object.entries(momentumStocks)
+        .filter(([, d]) => d?.price)
+        .map(([id, d]) => [id, d.price])
+    ),
+    ...Object.fromEntries(
+      Object.entries(bdcPrices)
+        .filter(([, d]) => d?.price)
+        .map(([id, d]) => [id, d.price])
+    ),
+  };
+
+  const { rows, totalValue, totalPnL, totalPnLPct } = calcPortfolio(positions, assets, auxPrices);
 
   // ── Form handlers ─────────────────────────────────────────────
   const openAdd = () => {
@@ -3309,7 +3353,9 @@ const useStockMomentum = () => {
     };
 
     fetchAll();
-    const interval = setInterval(fetchAll, 5 * 60 * 1000); // refresh every 5 min
+    const interval = setInterval(fetchAll,
+      getMarketStatus().isOpen ? INTERVALS.MOMENTUM_OPEN : INTERVALS.MOMENTUM_CLOSED
+    );
     return () => clearInterval(interval);
   }, []);
 
@@ -3636,7 +3682,52 @@ const PC_NEWS = [
   { id: 6, headline: "S&P: Private credit default rates remain below 2% but covenant-lite structures raise concern", source: "S&P", time: "2d ago", sentiment: "neutral" },
 ];
 
-const PrivateCreditPanel = memo(() => {
+// Live BDC price hook — fetches current price + daily change for BDC tickers.
+// Runs every 90s during market hours, 10min when closed.
+// NAV/yield/nonAccrual stay from BDC_DATA (quarterly fundamentals).
+const BDC_TICKERS = ["ARCC", "OBDC", "FSKKR", "GBDC", "PCMM"];
+
+const useBDCPrices = () => {
+  const [prices, setPrices] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchAll = async () => {
+      const results = {};
+      await Promise.all(BDC_TICKERS.map(async ticker => {
+        try {
+          const url   = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=5d`;
+          const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+          const res   = await fetch(proxy, { cache: "no-store" });
+          if (!res.ok) throw new Error(`${res.status}`);
+          const data  = await res.json();
+          const meta  = data?.chart?.result?.[0]?.meta;
+          if (!meta?.regularMarketPrice) throw new Error("no price");
+          results[ticker] = {
+            price:  parseFloat((meta.regularMarketPrice).toFixed(2)),
+            change: parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2)),
+            marketState: meta.marketState ?? "CLOSED",
+          };
+        } catch (e) {
+          console.warn(`[BDC] ${ticker}: ${e.message}`);
+        }
+      }));
+      setPrices(results);
+      setLoading(false);
+    };
+
+    fetchAll();
+    const interval = setInterval(
+      fetchAll,
+      getMarketStatus().isOpen ? 90 * 1000 : 10 * 60 * 1000
+    );
+    return () => clearInterval(interval);
+  }, []);
+
+  return { prices, loading };
+};
+
+const PrivateCreditPanel = memo(({ bdcPrices = {}, bdcLoading = false }) => {
   const [pcTab, setPcTab] = useState("bdc");
 
   return (
@@ -3687,8 +3778,13 @@ const PrivateCreditPanel = memo(() => {
             ))}
           </div>
           {BDC_DATA.map(bdc => {
-            const navPrem = ((bdc.price - bdc.nav) / bdc.nav * 100);
-            const isPos = bdc.change >= 0;
+            // Merge live price/change if fetched; fall back to static BDC_DATA
+            const live     = bdcPrices[bdc.ticker];
+            const price    = live?.price  ?? bdc.price;
+            const change   = live?.change ?? bdc.change;
+            const isClosed = live?.marketState === "CLOSED" || !live;
+            const navPrem  = ((price - bdc.nav) / bdc.nav * 100);
+            const isPos    = change >= 0;
             const navColor = navPrem >= 0 ? "#00ff88" : "#ff4466";
             return (
               <div key={bdc.ticker} style={{
@@ -3698,6 +3794,8 @@ const PrivateCreditPanel = memo(() => {
                 border: `1px solid ${isPos ? "rgba(0,255,136,0.08)" : "rgba(255,68,102,0.08)"}`,
                 borderRadius: 6, alignItems: "center",
                 borderLeft: `3px solid ${isPos ? "#00ff88" : "#ff4466"}`,
+                opacity: bdcLoading && !live ? 0.6 : 1,
+                transition: "opacity 0.3s",
               }}>
                 <div>
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{bdc.ticker}</div>
@@ -3705,8 +3803,13 @@ const PrivateCreditPanel = memo(() => {
                 </div>
                 <div style={{ fontSize: 11, color: "#aaa" }}>{bdc.name}</div>
                 <div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>${bdc.price.toFixed(2)}</div>
-                  <div style={{ fontSize: 10, color: isPos ? "#00ff88" : "#ff4466", fontFamily: "'Space Mono', monospace" }}>{fmtChange(bdc.change)}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: isClosed ? "#888" : "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>
+                    {bdcLoading && !live ? "..." : `$${price.toFixed(2)}`}
+                  </div>
+                  <div style={{ fontSize: 10, color: isPos ? "#00ff88" : "#ff4466", fontFamily: "'Space Mono', monospace" }}>
+                    {bdcLoading && !live ? "" : fmtChange(change)}
+                    {isClosed && live && <span style={{ color: "#555", marginLeft: 4, fontSize: 9 }}>LAST</span>}
+                  </div>
                 </div>
                 <div>
                   <div style={{ fontSize: 12, fontWeight: 700, color: navColor, fontFamily: "'Space Mono', monospace" }}>
@@ -3882,6 +3985,9 @@ export default function MarketMonitor() {
   // Stock momentum — lifted here so it isn't destroyed on tab switch
   // StockMomentumPanel receives data as props; no fetching inside the component
   const { stocks: momentumStocks, loading: momentumLoading, lastFetch: momentumLastFetch } = useStockMomentum();
+
+  // BDC prices — lifted here so Private Credit tab doesn't refetch on every switch
+  const { prices: bdcPrices, loading: bdcLoading } = useBDCPrices();
 
   const isMarketOpen = () => getMarketStatus().isOpen;
 
@@ -4358,7 +4464,9 @@ export default function MarketMonitor() {
           </div>
 
           {/* PRIVATE CREDIT TAB */}
-          {centerTab === "credit" && <PrivateCreditPanel />}
+          {centerTab === "credit" && (
+            <PrivateCreditPanel bdcPrices={bdcPrices} bdcLoading={bdcLoading} />
+          )}
 
           {/* STOCKS TAB */}
           {centerTab === "stocks" && (
@@ -4370,7 +4478,13 @@ export default function MarketMonitor() {
           )}
 
           {/* PORTFOLIO TAB */}
-          {centerTab === "portfolio" && <PortfolioPanel assets={assets} />}
+          {centerTab === "portfolio" && (
+            <PortfolioPanel
+              assets={assets}
+              momentumStocks={momentumStocks}
+              bdcPrices={bdcPrices}
+            />
+          )}
 
           {/* JOURNAL TAB */}
           {centerTab === "journal" && (

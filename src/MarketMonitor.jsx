@@ -2562,6 +2562,91 @@ const PORTFOLIO_POSITIONS = [
   { id: "ETH",   label: "Ethereum",         shares: 1.2,  avgCost: 2800,  assetId: "ETH", unit: "$" },
 ];
 
+// ─── Pure calculation helper — no UI logic ────────────────────────
+// auxData: { TICKER: { price, change, source, timestamp, confidence } }
+// Priority: main asset panel → auxData (momentum/BDC hooks) → avg cost basis
+function calcPortfolio(positions, liveAssets, auxData = {}) {
+  const rows = positions.map(pos => {
+    const liveAsset = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
+    const aux       = auxData[pos.id];
+
+    const currentPrice = liveAsset?.price ?? aux?.price ?? null;
+    const priceLoading = currentPrice === null;
+    const displayPrice = currentPrice ?? pos.avgCost;
+
+    const priceSource = liveAsset ? liveAsset.source
+                      : aux       ? aux.source
+                      :             "cost basis";
+    const priceChange = liveAsset?.change ?? aux?.change ?? null;
+    const priceTs     = liveAsset?.timestamp ?? aux?.timestamp ?? null;
+    const priceConf   = liveAsset?.confidence ?? aux?.confidence ?? "low";
+    const priceStale  = liveAsset?.stale ?? false;
+
+    const costBasis     = pos.shares * pos.avgCost;
+    const currentValue  = pos.shares * displayPrice;
+    const unrealizedPnL = priceLoading ? null : currentValue - costBasis;
+    const unrealizedPct = priceLoading ? null : (costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0);
+
+    return {
+      ...pos,
+      currentPrice: displayPrice, costBasis, currentValue,
+      unrealizedPnL, unrealizedPct, priceLoading,
+      priceSource, priceChange, priceTs, priceConf, priceStale,
+    };
+  });
+
+  const totalValue  = rows.reduce((s, r) => s + r.currentValue, 0);
+  const totalCost   = rows.reduce((s, r) => s + r.costBasis, 0);
+  const totalPnL    = totalValue - totalCost;
+  const totalPnLPct = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+
+  return {
+    rows: rows.map(r => ({
+      ...r,
+      allocation: totalValue > 0 ? (r.currentValue / totalValue) * 100 : 0,
+    })),
+    totalValue, totalCost, totalPnL, totalPnLPct,
+  };
+}
+
+const LIVE_ASSET_IDS = ["BTC", "ETH", "SPY", "QQQ", "VIX", "WTI", "DXY", "TNX", "GOLD"];
+
+const EMPTY_FORM = { id: "", label: "", shares: "", avgCost: "", assetId: "", unit: "$" };
+
+// ─── Multi-Portfolio Storage Helpers ─────────────────────────────
+// Storage key v2 — separate from old v1 "portfolio_positions"
+// On first load, migrates existing v1 positions into a default portfolio.
+const PORTFOLIOS_KEY  = "mm_portfolios_v2";
+const ACTIVE_ID_KEY   = "mm_active_portfolio";
+
+function newPortfolio(name, positions = []) {
+  return { id: `p_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name, positions };
+}
+
+function loadPortfolios() {
+  try {
+    const raw = localStorage.getItem(PORTFOLIOS_KEY);
+    if (raw) return JSON.parse(raw);
+    // Migrate v1 flat positions into a default portfolio
+    const v1 = localStorage.getItem("portfolio_positions");
+    const positions = v1 ? JSON.parse(v1) : PORTFOLIO_POSITIONS;
+    return [newPortfolio("Main Portfolio", positions)];
+  } catch { return [newPortfolio("Main Portfolio", PORTFOLIO_POSITIONS)]; }
+}
+
+function savePortfolios(portfolios) {
+  try { localStorage.setItem(PORTFOLIOS_KEY, JSON.stringify(portfolios)); } catch {}
+}
+
+function loadActiveId(portfolios) {
+  try {
+    const saved = localStorage.getItem(ACTIVE_ID_KEY);
+    return portfolios.find(p => p.id === saved) ? saved : portfolios[0]?.id ?? null;
+  } catch { return portfolios[0]?.id ?? null; }
+}
+
+function saveActiveId(id) {
+  try { localStorage.setItem(ACTIVE_ID_KEY, id); } catch {}
 }
 
 // ─── Portfolio Selector ────────────────────────────────────────────

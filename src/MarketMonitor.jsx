@@ -487,10 +487,15 @@ const useMarketData = (isPaused = false) => {
   const wsReconnectRef = useRef(null);
 
   // ── update one asset in state + cache ───────────────────────────────
-  // Accepts a normalized data object matching the backend shape:
-  // { price, change, percentChange, source, confidence, status, timestamp, cached }
   const updateAsset = useCallback((id, normalized) => {
-    // Write full normalized object to cache so UI picks up source/confidence/etc.
+    // Sanity guard: reject any update where % change is implausibly large.
+    // Binance 24h rolling window should never exceed ~50% for BTC/ETH.
+    // This catches any future field-mapping bugs before they corrupt the UI.
+    const pct = Math.abs(normalized.change ?? 0);
+    if (pct > 50) {
+      console.warn(`[updateAsset] REJECTED ${id}: change=${normalized.change}% exceeds 50% sanity limit`);
+      return;
+    }
     _priceCache[id] = normalized;
     setAssets(prev => prev.map(asset => {
       if (asset.id !== id) return asset;
@@ -526,19 +531,27 @@ const useMarketData = (isPaused = false) => {
         const id = BINANCE_ID_MAP[tick.s];
         if (!id) return;
 
-        // Normalize Binance tick to match backend standardized shape
+        // Normalize Binance tick to match backend standardized shape.
+        // IMPORTANT: `change` in our system = 24h % change (used everywhere as %).
+        // tick.P = 24h priceChangePercent (%), tick.p = 24h priceChange ($).
+        // tick.o = 24h open price — used to derive prevClose accurately.
         const price        = parseFloat(parseFloat(tick.c).toFixed(2));
         const percentChange= parseFloat(parseFloat(tick.P).toFixed(2));
-        const change       = parseFloat(parseFloat(tick.p).toFixed(2)); // tick.p = price change in $
-        const prevClose    = parseFloat((price - change).toFixed(2));
+        const dollarChange = parseFloat(parseFloat(tick.p).toFixed(2));
+        const openPrice    = parseFloat(parseFloat(tick.o).toFixed(2));
+        // prevClose from REST (already in _priceCache) is more accurate than
+        // deriving from tick — keep it if we have it, else fall back to open price
+        const cachedPrev   = _priceCache[id]?.prevClose;
+        const prevClose    = cachedPrev ?? openPrice;
 
         updateAsset(id, {
           symbol:       id,
           price,
-          change,
+          change:       percentChange,  // % is what the UI renders everywhere
           percentChange,
+          dollarChange,                 // stored for reference, not used in UI % display
           prevClose,
-          marketState:  "REGULAR",  // crypto is always live
+          marketState:  "REGULAR",
           source:       "Binance",
           confidence:   "high",
           status:       "valid",

@@ -2562,189 +2562,205 @@ const PORTFOLIO_POSITIONS = [
   { id: "ETH",   label: "Ethereum",         shares: 1.2,  avgCost: 2800,  assetId: "ETH", unit: "$" },
 ];
 
-// Mock current prices for positions not tracked in the main asset panel
-// ─── Pure calculation helper — no UI logic ───────────────────────
-// auxPrices: { TICKER: price } — live prices from momentum/BDC hooks
-// for positions not in the main assets array
-// calcPortfolio — pure calculation, no UI logic
-// auxData: { TICKER: { price, change, source, timestamp, confidence } }
-//   Built from momentumStocks + bdcPrices so portfolio rows carry full data provenance.
-function calcPortfolio(positions, liveAssets, auxData = {}) {
-  const rows = positions.map(pos => {
-    // Priority: main asset panel (same source as Dashboard) → auxData → avg cost basis
-    const liveAsset = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
-    const aux       = auxData[pos.id];
-
-    const currentPrice  = liveAsset?.price ?? aux?.price ?? null;
-    const priceLoading  = currentPrice === null;  // true until any live price arrives
-    const displayPrice  = currentPrice ?? pos.avgCost;   // show cost basis as dim fallback
-    const priceSource   = liveAsset ? liveAsset.source
-                        : aux       ? aux.source
-                        :             "cost basis";
-    const priceChange   = liveAsset?.change ?? aux?.change ?? null;
-    const priceTs       = liveAsset?.timestamp ?? aux?.timestamp ?? null;
-    const priceConf     = liveAsset?.confidence ?? aux?.confidence ?? (priceLoading ? "low" : "low");
-    const priceStale    = liveAsset?.stale ?? false;
-
-    const costBasis     = pos.shares * pos.avgCost;
-    const currentValue  = pos.shares * displayPrice;
-    const unrealizedPnL = priceLoading ? null : currentValue - costBasis;
-    const unrealizedPct = priceLoading ? null : (costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0);
-
-    return {
-      ...pos,
-      currentPrice: displayPrice, costBasis, currentValue,
-      unrealizedPnL, unrealizedPct,
-      priceLoading,
-      // data provenance — same fields as asset cards
-      priceSource, priceChange, priceTs, priceConf, priceStale,
-    };
-  });
-
-  const totalValue  = rows.reduce((s, r) => s + r.currentValue, 0);
-  const totalCost   = rows.reduce((s, r) => s + r.costBasis, 0);
-  const totalPnL    = totalValue - totalCost;
-  const totalPnLPct = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
-
-  const rowsWithAlloc = rows.map(r => ({
-    ...r,
-    allocation: totalValue > 0 ? (r.currentValue / totalValue) * 100 : 0,
-  }));
-
-  return { rows: rowsWithAlloc, totalValue, totalCost, totalPnL, totalPnLPct };
 }
 
-const LIVE_ASSET_IDS = ["BTC", "ETH", "SPY", "QQQ", "VIX", "WTI", "DXY", "TNX"];
+// ─── Portfolio Selector ────────────────────────────────────────────
+const PortfolioSelector = ({ portfolios, activeId, onSwitch, onCreate, onRename, onDelete }) => {
+  const [renaming, setRenaming] = useState(null);
+  const [renameVal, setRenameVal] = useState("");
+  const [creating, setCreating]  = useState(false);
+  const [newName, setNewName]    = useState("");
 
-const EMPTY_FORM = { id: "", label: "", shares: "", avgCost: "", assetId: "", unit: "$" };
+  const commitRename = () => {
+    if (renameVal.trim()) onRename(renaming, renameVal.trim());
+    setRenaming(null); setRenameVal("");
+  };
+  const commitCreate = () => {
+    if (newName.trim()) onCreate(newName.trim());
+    setCreating(false); setNewName("");
+  };
 
+  const btnBase = {
+    background: "none", border: "none", cursor: "pointer",
+    fontFamily: "'Space Mono', monospace", fontSize: 11,
+    padding: "6px 10px", transition: "all 0.15s",
+  };
+  const inputStyle = {
+    background: "rgba(255,255,255,0.07)", border: "1px solid rgba(0,170,255,0.3)",
+    borderRadius: 4, color: "#e8e8e8", fontSize: 11,
+    fontFamily: "'Space Mono', monospace", padding: "4px 8px", outline: "none",
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 2, overflowX: "auto",
+        borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: 0 }}>
+        {portfolios.map(p => {
+          const isActive = p.id === activeId;
+          return (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+              {renaming === p.id ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px" }}>
+                  <input autoFocus style={{ ...inputStyle, width: 110 }} value={renameVal}
+                    onChange={e => setRenameVal(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") setRenaming(null); }} />
+                  <button onClick={commitRename} style={{ ...btnBase, color: "#00ff88", fontSize: 10, padding: "2px 6px" }}>✓</button>
+                  <button onClick={() => setRenaming(null)} style={{ ...btnBase, color: "#555", fontSize: 10, padding: "2px 6px" }}>✕</button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => onSwitch(p.id)}
+                  onDoubleClick={() => { setRenaming(p.id); setRenameVal(p.name); }}
+                  style={{
+                    ...btnBase,
+                    color: isActive ? "#00aaff" : "#555",
+                    borderBottom: isActive ? "2px solid #00aaff" : "2px solid transparent",
+                    background: isActive ? "rgba(0,170,255,0.06)" : "none",
+                    letterSpacing: 0.5, textTransform: "uppercase", paddingBottom: 8,
+                  }}
+                  title="Double-click to rename"
+                >{p.name}</button>
+              )}
+              {isActive && portfolios.length > 1 && renaming !== p.id && (
+                <button onClick={() => onDelete(p.id)}
+                  style={{ ...btnBase, color: "#333", fontSize: 9, padding: "0 4px 8px 0" }}
+                  title="Delete portfolio">×</button>
+              )}
+            </div>
+          );
+        })}
+        {creating ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", flexShrink: 0 }}>
+            <input autoFocus placeholder="Portfolio name" style={{ ...inputStyle, width: 130 }}
+              value={newName} onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") commitCreate(); if (e.key === "Escape") setCreating(false); }} />
+            <button onClick={commitCreate} style={{ ...btnBase, color: "#00ff88", fontSize: 10, padding: "2px 6px" }}>✓</button>
+            <button onClick={() => setCreating(false)} style={{ ...btnBase, color: "#555", fontSize: 10, padding: "2px 6px" }}>✕</button>
+          </div>
+        ) : (
+          <button onClick={() => setCreating(true)}
+            style={{ ...btnBase, color: "#333", fontSize: 14, padding: "0 8px 8px", letterSpacing: 0 }}
+            title="New portfolio">+</button>
+        )}
+      </div>
+      {portfolios.length > 1 && (
+        <div style={{ fontSize: 8, color: "#333", fontFamily: "'Space Mono', monospace", padding: "3px 2px 0" }}>
+          Double-click tab to rename
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── PortfolioPanel ────────────────────────────────────────────────
 const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode = false }) => {
-  // Load from localStorage or fall back to defaults
-  const [positions, setPositions] = useState(() => {
-    try {
-      const saved = localStorage.getItem("portfolio_positions");
-      return saved ? JSON.parse(saved) : PORTFOLIO_POSITIONS;
-    } catch { return PORTFOLIO_POSITIONS; }
-  });
 
-  const [editingId, setEditingId] = useState(null); // id of position being edited
-  const [showForm, setShowForm]   = useState(false); // add new form visible
+  const [portfolios, setPortfolios] = useState(() => loadPortfolios());
+  const [activeId,   setActiveId]   = useState(() => loadActiveId(loadPortfolios()));
+
+  const activePortfolio = portfolios.find(p => p.id === activeId) ?? portfolios[0];
+  const positions       = activePortfolio?.positions ?? [];
+
+  const saveAll = (updated, newActiveId) => {
+    savePortfolios(updated);
+    setPortfolios(updated);
+    if (newActiveId !== undefined) { saveActiveId(newActiveId); setActiveId(newActiveId); }
+  };
+
+  const updatePositions = (newPositions) => {
+    const updated = portfolios.map(p => p.id === activeId ? { ...p, positions: newPositions } : p);
+    saveAll(updated);
+  };
+
+  const handleCreate = (name) => {
+    const p = newPortfolio(name, []);
+    saveAll([...portfolios, p], p.id);
+  };
+
+  const handleSwitch = (id) => {
+    saveActiveId(id); setActiveId(id);
+    setShowForm(false); setEditingId(null); setForm(EMPTY_FORM);
+  };
+
+  const handleRename = (id, name) =>
+    saveAll(portfolios.map(p => p.id === id ? { ...p, name } : p));
+
+  const handleDelete = (id) => {
+    if (portfolios.length <= 1) return;
+    const updated = portfolios.filter(p => p.id !== id);
+    saveAll(updated, updated[0].id);
+  };
+
+  const [editingId, setEditingId] = useState(null);
+  const [showForm, setShowForm]   = useState(false);
   const [form, setForm]           = useState(EMPTY_FORM);
   const [formError, setFormError] = useState("");
-
-  // Persist to localStorage on every change
-  const save = (updated) => {
-    setPositions(updated);
-    try { localStorage.setItem("portfolio_positions", JSON.stringify(updated)); } catch {}
-  };
 
   const fmt$ = (n) => `$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtPct = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
   const pnlColor = (n) => n >= 0 ? "#00ff88" : "#ff4466";
 
-  // Build auxiliary data map — passes full provenance (source, timestamp, change)
-  // so portfolio rows can show identical data quality indicators as the Dashboard
   const auxData = {
     ...Object.fromEntries(
-      Object.entries(momentumStocks)
-        .filter(([, d]) => d?.price)
-        .map(([id, d]) => [id, {
-          price:      d.price,
-          change:     d.change ?? null,
-          source:     "Yahoo",
-          timestamp:  d.lastFetch?.toISOString?.() ?? null,
-          confidence: "medium",
-        }])
+      Object.entries(momentumStocks).filter(([, d]) => d?.price)
+        .map(([id, d]) => [id, { price: d.price, change: d.change ?? null, source: "Yahoo", timestamp: null, confidence: "medium" }])
     ),
     ...Object.fromEntries(
-      Object.entries(bdcPrices)
-        .filter(([, d]) => d?.price)
-        .map(([id, d]) => [id, {
-          price:      d.price,
-          change:     d.change ?? null,
-          source:     "Yahoo",
-          timestamp:  null,
-          confidence: "medium",
-        }])
+      Object.entries(bdcPrices).filter(([, d]) => d?.price)
+        .map(([id, d]) => [id, { price: d.price, change: d.change ?? null, source: "Yahoo", timestamp: null, confidence: "medium" }])
     ),
   };
 
-  const { rows, totalValue, totalPnL, totalPnLPct } = calcPortfolio(positions, assets, auxData);
+  const { rows } = calcPortfolio(positions, assets, auxData);
 
-  // ── Form handlers ─────────────────────────────────────────────
-  const openAdd = () => {
-    setForm(EMPTY_FORM);
-    setEditingId(null);
-    setFormError("");
-    setShowForm(true);
-  };
+  const liveRows   = rows.filter(r => !r.priceLoading);
+  const anyLoading = rows.some(r => r.priceLoading);
+  const liveValue  = liveRows.reduce((s, r) => s + r.currentValue, 0);
+  const liveCost   = liveRows.reduce((s, r) => s + r.costBasis, 0);
+  const livePnL    = liveValue - liveCost;
+  const livePnLPct = liveCost > 0 ? (livePnL / liveCost) * 100 : 0;
 
-  const openEdit = (pos) => {
-    setForm({ ...pos, shares: String(pos.shares), avgCost: String(pos.avgCost) });
-    setEditingId(pos.id);
-    setFormError("");
-    setShowForm(true);
-  };
-
+  const openAdd  = () => { setForm(EMPTY_FORM); setEditingId(null); setFormError(""); setShowForm(true); };
+  const openEdit = (pos) => { setForm({ ...pos, shares: String(pos.shares), avgCost: String(pos.avgCost) }); setEditingId(pos.id); setFormError(""); setShowForm(true); };
   const closeForm = () => { setShowForm(false); setEditingId(null); setForm(EMPTY_FORM); setFormError(""); };
 
-  const validateForm = () => {
-    if (!form.id.trim())            return "Ticker is required";
-    if (!form.label.trim())         return "Name is required";
-    if (isNaN(form.shares) || parseFloat(form.shares) <= 0)   return "Shares must be a positive number";
-    if (isNaN(form.avgCost) || parseFloat(form.avgCost) <= 0) return "Avg cost must be a positive number";
-    if (!editingId && positions.find(p => p.id.toUpperCase() === form.id.toUpperCase())) return "Ticker already exists";
-    return "";
-  };
-
   const submitForm = () => {
-    const err = validateForm();
-    if (err) { setFormError(err); return; }
-    const entry = {
-      id:      form.id.toUpperCase().trim(),
-      label:   form.label.trim(),
-      shares:  parseFloat(form.shares),
-      avgCost: parseFloat(form.avgCost),
-      assetId: LIVE_ASSET_IDS.includes(form.id.toUpperCase().trim()) ? form.id.toUpperCase().trim() : null,
-      unit:    "$",
-    };
-    if (editingId) {
-      save(positions.map(p => p.id === editingId ? entry : p));
-    } else {
-      save([...positions, entry]);
-    }
+    const id      = form.id.trim().toUpperCase();
+    const shares  = parseFloat(form.shares);
+    const avgCost = parseFloat(form.avgCost);
+    if (!id) return setFormError("Ticker is required");
+    if (isNaN(shares) || shares <= 0) return setFormError("Shares must be > 0");
+    if (isNaN(avgCost) || avgCost <= 0) return setFormError("Avg cost must be > 0");
+    if (!editingId && positions.find(p => p.id === id)) return setFormError(`${id} already exists in this portfolio`);
+    const entry = { id, label: form.label.trim() || id, shares, avgCost, assetId: LIVE_ASSET_IDS.includes(id) ? id : null, unit: "$" };
+    updatePositions(editingId ? positions.map(p => p.id === editingId ? entry : p) : [...positions, entry]);
     closeForm();
   };
 
-  const deletePosition = (id) => {
-    if (window.confirm(`Remove ${id} from portfolio?`)) save(positions.filter(p => p.id !== id));
-  };
+  const deletePosition = (id) => updatePositions(positions.filter(p => p.id !== id));
 
-  // ── Input style helper ────────────────────────────────────────
   const inputStyle = {
-    background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
     borderRadius: 4, padding: "6px 10px", color: "#e8e8e8", fontSize: 12,
-    fontFamily: "'Space Mono', monospace", width: "100%", outline: "none",
-    boxSizing: "border-box",
+    fontFamily: "'Space Mono', monospace", width: "100%", outline: "none", boxSizing: "border-box",
   };
-
-  // Only count rows with live prices in summary totals — excludes loading rows
-  const liveRows    = rows.filter(r => !r.priceLoading);
-  const anyLoading  = rows.some(r => r.priceLoading);
-  const liveValue   = liveRows.reduce((s, r) => s + r.currentValue, 0);
-  const liveCost    = liveRows.reduce((s, r) => s + r.costBasis, 0);
-  const livePnL     = liveValue - liveCost;
-  const livePnLPct  = liveCost > 0 ? (livePnL / liveCost) * 100 : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
+      {/* Portfolio selector */}
+      <PortfolioSelector
+        portfolios={portfolios} activeId={activeId}
+        onSwitch={handleSwitch} onCreate={handleCreate}
+        onRename={handleRename} onDelete={handleDelete}
+      />
+
       {/* Summary bar */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
         {[
-          { label: "Portfolio Value", value: liveRows.length ? fmt$(liveValue) : "—",                                             color: "#f0f0f0" },
-          { label: "Total P&L",       value: liveRows.length ? `${livePnL >= 0 ? "+" : "-"}${fmt$(livePnL)}` : "—",              color: pnlColor(livePnL) },
-          { label: "Return",          value: liveRows.length ? fmtPct(livePnLPct) : "—",                                          color: pnlColor(livePnLPct) },
+          { label: "Portfolio Value", value: liveRows.length ? fmt$(liveValue) : "—",                                 color: "#f0f0f0" },
+          { label: "Total P&L",       value: liveRows.length ? `${livePnL >= 0 ? "+" : "-"}${fmt$(livePnL)}` : "—",  color: pnlColor(livePnL) },
+          { label: "Return",          value: liveRows.length ? fmtPct(livePnLPct) : "—",                               color: pnlColor(livePnLPct) },
         ].map(stat => (
           <div key={stat.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "10px 14px" }}>
             <div style={{ fontSize: 9, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>
@@ -2759,97 +2775,56 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
       {showForm && (
         <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(0,170,255,0.2)", borderRadius: 8, padding: 16 }}>
           <div style={{ fontSize: 11, color: "#00aaff", fontFamily: "'Space Mono', monospace", letterSpacing: 1, marginBottom: 12 }}>
-            {editingId ? `EDIT — ${editingId}` : "ADD POSITION"}
+            {editingId ? `EDIT — ${editingId}` : `ADD TO ${(activePortfolio?.name ?? "").toUpperCase()}`}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
             <div>
               <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>TICKER *</div>
-              <input
-                style={{ ...inputStyle, textTransform: "uppercase" }}
-                value={form.id}
-                onChange={e => setForm(f => ({ ...f, id: e.target.value }))}
-                placeholder="PLTR"
-                disabled={!!editingId}
-              />
+              <input style={{ ...inputStyle, textTransform: "uppercase" }} value={form.id}
+                onChange={e => setForm(f => ({ ...f, id: e.target.value }))} placeholder="PLTR" disabled={!!editingId} />
             </div>
             <div>
-              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>NAME *</div>
-              <input
-                style={inputStyle}
-                value={form.label}
-                onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
-                placeholder="Palantir"
-              />
+              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>NAME</div>
+              <input style={inputStyle} value={form.label}
+                onChange={e => setForm(f => ({ ...f, label: e.target.value }))} placeholder="Palantir" />
             </div>
             <div>
               <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>SHARES *</div>
-              <input
-                style={inputStyle}
-                value={form.shares}
-                onChange={e => setForm(f => ({ ...f, shares: e.target.value }))}
-                placeholder="100"
-                type="number"
-                min="0"
-              />
+              <input style={inputStyle} value={form.shares} type="number" step="any" min="0"
+                onChange={e => setForm(f => ({ ...f, shares: e.target.value }))} placeholder="100" />
             </div>
             <div>
               <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>AVG COST *</div>
-              <input
-                style={inputStyle}
-                value={form.avgCost}
-                onChange={e => setForm(f => ({ ...f, avgCost: e.target.value }))}
-                placeholder="18.42"
-                type="number"
-                min="0"
-                step="0.01"
-              />
+              <input style={inputStyle} value={form.avgCost} type="number" step="any" min="0"
+                onChange={e => setForm(f => ({ ...f, avgCost: e.target.value }))} placeholder="18.42" />
             </div>
           </div>
-          {formError && (
-            <div style={{ fontSize: 11, color: "#ff4466", fontFamily: "'Space Mono', monospace", marginBottom: 8 }}>
-              ⚠ {formError}
-            </div>
-          )}
+          {formError && <div style={{ fontSize: 10, color: "#ff4466", fontFamily: "'Space Mono', monospace", marginBottom: 8 }}>{formError}</div>}
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={submitForm} style={{
-              background: "rgba(0,255,136,0.15)", border: "1px solid rgba(0,255,136,0.3)",
-              color: "#00ff88", padding: "6px 16px", borderRadius: 4, cursor: "pointer",
-              fontSize: 11, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
-            }}>
+            <button onClick={submitForm} style={{ background: "rgba(0,170,255,0.15)", border: "1px solid rgba(0,170,255,0.3)", color: "#00aaff", borderRadius: 4, padding: "6px 16px", cursor: "pointer", fontSize: 11, fontFamily: "'Space Mono', monospace" }}>
               {editingId ? "SAVE" : "ADD"}
             </button>
-            <button onClick={closeForm} style={{
-              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
-              color: "#666", padding: "6px 16px", borderRadius: 4, cursor: "pointer",
-              fontSize: 11, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
-            }}>
+            <button onClick={closeForm} style={{ background: "none", border: "1px solid rgba(255,255,255,0.08)", color: "#555", borderRadius: 4, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontFamily: "'Space Mono', monospace" }}>
               CANCEL
             </button>
           </div>
         </div>
       )}
 
-      {/* Table header + Add button */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 6 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 0.7fr 0.9fr 0.9fr 1fr 0.6fr 0.5fr", gap: 8, flex: 1 }}>
-          {["Position", "Price", "Value", "Cost", "P&L", "Alloc", ""].map((h, i) => (
-            <span key={i} style={{ fontSize: 9, color: "#444", letterSpacing: 1, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>{h}</span>
-          ))}
+      {/* Column headers */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 0.7fr 0.9fr 0.9fr 1fr 0.6fr 0.5fr", gap: 8, padding: "0 10px" }}>
+        {["POSITION", "PRICE", "VALUE", "COST", "P&L", "ALLOC", ""].map((h, i) => (
+          <span key={i} className={i >= 3 && i <= 4 ? "portfolio-col-hide" : ""} style={{ fontSize: 9, color: "#444", letterSpacing: 1, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>{h}</span>
+        ))}
+        <div style={{ gridColumn: "7 / 8", display: "flex", justifyContent: "flex-end" }}>
+          {!showForm && (
+            <button onClick={openAdd} style={{ background: "rgba(0,170,255,0.1)", border: "1px solid rgba(0,170,255,0.25)", color: "#00aaff", borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontSize: 10, fontFamily: "'Space Mono', monospace", letterSpacing: 0.5 }}>+ ADD</button>
+          )}
         </div>
-        {!showForm && (
-          <button onClick={openAdd} style={{
-            background: "rgba(0,255,136,0.1)", border: "1px solid rgba(0,255,136,0.25)",
-            color: "#00ff88", padding: "4px 12px", borderRadius: 4, cursor: "pointer",
-            fontSize: 10, fontFamily: "'Space Mono', monospace", letterSpacing: 1, flexShrink: 0, marginLeft: 8,
-          }}>
-            + ADD
-          </button>
-        )}
       </div>
 
       {/* Position rows */}
       {rows.map(row => {
-        // priceLoading = true until any live data arrives (shows dim cost basis + --)
         const hasLive = !row.priceLoading;
         const isGain  = hasLive ? row.unrealizedPnL >= 0 : true;
         const c       = hasLive ? pnlColor(row.unrealizedPnL) : "#444";
@@ -2859,52 +2834,31 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
             gap: 8, padding: "10px 10px",
             background: hasLive ? (isGain ? "rgba(0,255,136,0.02)" : "rgba(255,68,102,0.02)") : "rgba(255,255,255,0.01)",
             border: `1px solid ${hasLive ? (isGain ? "rgba(0,255,136,0.08)" : "rgba(255,68,102,0.08)") : "rgba(255,255,255,0.05)"}`,
-            borderRadius: 6, alignItems: "center",
-            borderLeft: `3px solid ${c}`,
-            opacity: row.priceLoading ? 0.7 : 1,
-            transition: "opacity 0.4s, border-color 0.4s",
+            borderRadius: 6, alignItems: "center", borderLeft: `3px solid ${c}`,
+            opacity: row.priceLoading ? 0.7 : 1, transition: "opacity 0.4s, border-color 0.4s",
           }}>
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{row.id}</div>
               <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{row.shares} shares</div>
             </div>
             <div>
-              <div style={{
-                fontSize: 12, fontFamily: "'Space Mono', monospace",
-                color: row.priceLoading ? "#555" : row.priceStale ? "#888" : "#ccc",
-              }}>
-                {row.priceLoading
-                  ? <span style={{ color: "#444", letterSpacing: 1 }}>—</span>
-                  : `$${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                }
+              <div style={{ fontSize: 12, fontFamily: "'Space Mono', monospace", color: row.priceLoading ? "#555" : row.priceStale ? "#888" : "#ccc" }}>
+                {row.priceLoading ? <span style={{ color: "#444", letterSpacing: 1 }}>—</span> : `$${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
               </div>
-              {/* % change badge + staleness — only when live data present */}
               <div style={{ display: "flex", gap: 4, marginTop: 2, alignItems: "center" }}>
                 {hasLive && row.priceChange != null && (
-                  <span style={{
-                    fontSize: 9, color: row.priceChange >= 0 ? "#00ff88" : "#ff4466",
-                    fontFamily: "'Space Mono', monospace",
-                  }}>
+                  <span style={{ fontSize: 9, color: row.priceChange >= 0 ? "#00ff88" : "#ff4466", fontFamily: "'Space Mono', monospace" }}>
                     {row.priceChange >= 0 ? "+" : ""}{row.priceChange.toFixed(2)}%
                   </span>
                 )}
-                {row.priceLoading && (
-                  <span style={{ fontSize: 8, color: "#444", fontFamily: "'Space Mono', monospace" }}>loading</span>
-                )}
+                {row.priceLoading && <span style={{ fontSize: 8, color: "#444", fontFamily: "'Space Mono', monospace" }}>loading</span>}
                 {!row.priceLoading && row.priceStale && (
-                  <span style={{
-                    fontSize: 7, padding: "1px 3px", borderRadius: 2,
-                    background: "rgba(255,215,0,0.1)", color: "#ffd700",
-                    fontFamily: "'Space Mono', monospace",
-                    border: "1px solid rgba(255,215,0,0.2)",
-                  }}>STALE</span>
+                  <span style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "rgba(255,215,0,0.1)", color: "#ffd700", fontFamily: "'Space Mono', monospace", border: "1px solid rgba(255,215,0,0.2)" }}>STALE</span>
                 )}
               </div>
-              {/* Debug mode: source + timestamp */}
               {debugMode && (
                 <div style={{ fontSize: 8, color: "#00aaff", fontFamily: "'Space Mono', monospace", marginTop: 1 }}>
-                  {row.priceSource}
-                  {row.priceTs && ` · ${new Date(row.priceTs).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`}
+                  {row.priceSource}{row.priceTs && ` · ${new Date(row.priceTs).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`}
                 </div>
               )}
             </div>
@@ -2914,10 +2868,7 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
             <div className="portfolio-col-hide" style={{ fontSize: 12, color: "#666", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.costBasis)}</div>
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, color: c, fontFamily: "'Space Mono', monospace" }}>
-                {hasLive && row.unrealizedPnL != null
-                  ? `${row.unrealizedPnL >= 0 ? "+" : "-"}${fmt$(row.unrealizedPnL)}`
-                  : <span style={{ color: "#333" }}>—</span>
-                }
+                {hasLive && row.unrealizedPnL != null ? `${row.unrealizedPnL >= 0 ? "+" : "-"}${fmt$(row.unrealizedPnL)}` : <span style={{ color: "#333" }}>—</span>}
               </div>
               <div style={{ fontSize: 10, color: c, opacity: 0.8, fontFamily: "'Space Mono', monospace" }}>
                 {hasLive && row.unrealizedPct != null ? fmtPct(row.unrealizedPct) : ""}
@@ -2929,18 +2880,9 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
                 <div style={{ height: "100%", width: `${Math.min(row.allocation, 100)}%`, background: c, borderRadius: 2, transition: "width 0.8s ease" }} />
               </div>
             </div>
-            {/* Edit / Delete buttons */}
             <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
-              <button onClick={() => openEdit(positions.find(p => p.id === row.id))} style={{
-                background: "none", border: "1px solid rgba(255,255,255,0.1)",
-                color: "#666", borderRadius: 3, padding: "2px 6px", cursor: "pointer",
-                fontSize: 10, fontFamily: "'Space Mono', monospace",
-              }} title="Edit">✎</button>
-              <button onClick={() => deletePosition(row.id)} style={{
-                background: "none", border: "1px solid rgba(255,68,102,0.2)",
-                color: "#ff4466", borderRadius: 3, padding: "2px 6px", cursor: "pointer",
-                fontSize: 10,
-              }} title="Remove">×</button>
+              <button onClick={() => openEdit(positions.find(p => p.id === row.id))} style={{ background: "none", border: "1px solid rgba(255,255,255,0.1)", color: "#666", borderRadius: 3, padding: "2px 6px", cursor: "pointer", fontSize: 10, fontFamily: "'Space Mono', monospace" }} title="Edit">✎</button>
+              <button onClick={() => deletePosition(row.id)} style={{ background: "none", border: "1px solid rgba(255,68,102,0.2)", color: "#ff4466", borderRadius: 3, padding: "2px 6px", cursor: "pointer", fontSize: 10 }} title="Remove">×</button>
             </div>
           </div>
         );
@@ -2953,7 +2895,7 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
       )}
 
       <div style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace", padding: "2px 4px" }}>
-        BTC/ETH/SPY/QQQ via Dashboard feed · SOFI/PLTR/ZETA via Yahoo · ARCC/OBDC via Yahoo · Others use cost basis · Enable DEBUG for source details
+        BTC/ETH/SPY/QQQ via Dashboard feed · SOFI/PLTR/ZETA via /api/stocks · ARCC/OBDC via /api/stocks · Enable DEBUG for source details
       </div>
     </div>
   );

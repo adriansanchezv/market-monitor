@@ -6,7 +6,28 @@ import { LineChart, Line, ResponsiveContainer, Tooltip, AreaChart, Area } from "
 // ─────────────────────────────────────────────
 const INTERVALS = { PRICES: 35000, NEWS: 60000, SOCIAL: 120000 };
 
-// Persistent price cache — never falls back to mock after first real fetch
+// ─────────────────────────────────────────────
+// CENTRAL MARKET DATA STORE
+// ─────────────────────────────────────────────
+// _priceCache is the single source of truth for all asset data.
+//
+// Shape per asset id:
+//   { price, change (% 24h), percentChange, prevClose, openPrice,
+//     source, confidence, status, cached, isFallback, timestamp,
+//     marketState, klines? }
+//
+// Write path (in order of authority):
+//   1. useMarketData init — Binance REST 24hr + klines (BTC/ETH)
+//   2. useMarketData WS handler — Binance real-time ticks (BTC/ETH)
+//   3. fetchAndUpdate polling — Vercel /api/prices (all assets, 35s)
+//
+// Read path:
+//   useMarketData returns `assets[]` derived from this cache.
+//   All components receive assets as props — NO component fetches directly.
+//   Exceptions: useFearGreed, useLeveragedAssets, useStockMomentum
+//   (these are non-market auxiliary data sources, not price data)
+//
+// NEVER write to _priceCache from inside a component.
 const _priceCache = {};
 
 // ─────────────────────────────────────────────
@@ -3314,8 +3335,7 @@ const MOMENTUM_COLORS = {
   },
 };
 
-const StockMomentumPanel = memo(() => {
-  const { stocks, loading, lastFetch } = useStockMomentum();
+const StockMomentumPanel = memo(({ stocks = {}, loading = true, lastFetch = null }) => {
 
   const fmt$ = (n) => n != null ? `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—";
   const fmtPct = (n) => n != null ? `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` : "—";
@@ -3859,6 +3879,10 @@ export default function MarketMonitor() {
     return { ...a, price: p.price, change: p.change, signal: detectLeadLag(btcChangeForLag, p.change) };
   });
 
+  // Stock momentum — lifted here so it isn't destroyed on tab switch
+  // StockMomentumPanel receives data as props; no fetching inside the component
+  const { stocks: momentumStocks, loading: momentumLoading, lastFetch: momentumLastFetch } = useStockMomentum();
+
   const isMarketOpen = () => getMarketStatus().isOpen;
 
   const sentimentScore = assets.reduce((acc, a) => {
@@ -4337,7 +4361,13 @@ export default function MarketMonitor() {
           {centerTab === "credit" && <PrivateCreditPanel />}
 
           {/* STOCKS TAB */}
-          {centerTab === "stocks" && <StockMomentumPanel />}
+          {centerTab === "stocks" && (
+            <StockMomentumPanel
+              stocks={momentumStocks}
+              loading={momentumLoading}
+              lastFetch={momentumLastFetch}
+            />
+          )}
 
           {/* PORTFOLIO TAB */}
           {centerTab === "portfolio" && <PortfolioPanel assets={assets} />}

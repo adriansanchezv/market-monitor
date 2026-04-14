@@ -552,6 +552,33 @@ async function fetchCryptoKlines(symbol, limit = 24) {
   }
 }
 
+// ─────────────────────────────────────────────
+// TIMEFRAME CONFIG
+// Maps label → Binance interval + candle count
+// ─────────────────────────────────────────────
+const TIMEFRAMES = {
+  "1H":  { interval: "5m",  limit: 12, label: "1H",  desc: "5-min candles, 1 hour"  },
+  "4H":  { interval: "15m", limit: 16, label: "4H",  desc: "15-min candles, 4 hours" },
+  "24H": { interval: "1h",  limit: 24, label: "24H", desc: "1-hour candles, 24 hours" },
+};
+const DEFAULT_TIMEFRAME = "24H";
+
+// Fetches klines for a given timeframe for both BTC and ETH.
+// Returns { BTC: [...], ETH: [...] } — null entries on fetch failure.
+async function fetchKlinesForTimeframe(tf) {
+  const cfg = TIMEFRAMES[tf];
+  if (!cfg) return {};
+  const [btc, eth] = await Promise.all([
+    fetchCryptoKlines(`BTCUSDT`, cfg.limit).then(data =>
+      data ? data.map(k => ({ ...k })) : null
+    ).catch(() => null),
+    fetchCryptoKlines(`ETHUSDT`, cfg.limit).then(data =>
+      data ? data.map(k => ({ ...k })) : null
+    ).catch(() => null),
+  ]);
+  return { BTC: btc, ETH: eth };
+}
+
 const useMarketData = (isPaused = false) => {
   // Seed from localStorage cache so crypto shows real values + sparklines instantly on reload
   const [assets, setAssets] = useState(() => {
@@ -580,9 +607,25 @@ const useMarketData = (isPaused = false) => {
   const [lastUpdated, setLastUpdated]   = useState(null);
   const [error, setError]               = useState(null);
   const [wsConnected, setWsConnected]   = useState(false);
+  const [timeframe, setTimeframe]       = useState(DEFAULT_TIMEFRAME);
   const abortRef       = useRef(null);
   const wsRef          = useRef(null);
   const wsReconnectRef = useRef(null);
+  // Cache fetched klines per timeframe so switching back is instant
+  const klinesCache    = useRef({});  // { "1H": { BTC: [...], ETH: [...] }, ... }
+
+  // Apply a klines result set to asset sparklines in state
+  const applyKlines = useCallback((klinesMap, livePrice) => {
+    setAssets(prev => prev.map(asset => {
+      const klines = klinesMap[asset.id];
+      if (!klines?.length) return asset;
+      const sparkline = klines.map(k => ({ ...k }));
+      // Pin last point to current live price so sparkline tail matches price card
+      const live = livePrice?.[asset.id] ?? asset.price;
+      sparkline[sparkline.length - 1] = { v: live, t: Date.now() };
+      return { ...asset, sparkline };
+    }));
+  }, []);
 
   // ── update one asset in state + cache ───────────────────────────────
   const updateAsset = useCallback((id, normalized) => {
@@ -765,8 +808,26 @@ const useMarketData = (isPaused = false) => {
     };
   }, [connectWS, fetchAndUpdate]);
 
+  // Refetch klines whenever timeframe changes.
+  // Cache results so switching back to a previously viewed timeframe is instant.
+  useEffect(() => {
+    const cached = klinesCache.current[timeframe];
+    if (cached) {
+      // Already have this timeframe — apply immediately from cache
+      const livePrice = { BTC: _priceCache.BTC?.price, ETH: _priceCache.ETH?.price };
+      applyKlines(cached, livePrice);
+      return;
+    }
+    // Fetch fresh klines for this timeframe
+    fetchKlinesForTimeframe(timeframe).then(klinesMap => {
+      klinesCache.current[timeframe] = klinesMap;
+      const livePrice = { BTC: _priceCache.BTC?.price, ETH: _priceCache.ETH?.price };
+      applyKlines(klinesMap, livePrice);
+    });
+  }, [timeframe, applyKlines]);
+
   const systemStatus = _priceCache._systemStatus ?? { status: "LIVE", errorCount: 0 };
-  return { assets, lastUpdated, error, wsConnected, systemStatus };
+  return { assets, lastUpdated, error, wsConnected, systemStatus, timeframe, setTimeframe };
 };
 
 // ─────────────────────────────────────────────
@@ -1156,7 +1217,7 @@ const Sparkline = ({ data, change }) => {
   );
 };
 
-const AssetCard = memo(({ asset, debugMode }) => {
+const AssetCard = memo(({ asset, debugMode, timeframe }) => {
   const [flashing, setFlashing] = useState(false);
   const [justUpdated, setJustUpdated] = useState(false);
   const prevPrice = useRef(asset.price);
@@ -1307,7 +1368,17 @@ const AssetCard = memo(({ asset, debugMode }) => {
           </div>
         </div>
       </div>
-      <Sparkline data={asset.sparkline} change={asset.change} />
+      <div style={{ position: "relative" }}>
+        <Sparkline data={asset.sparkline} change={asset.change} />
+        {/* Timeframe label — only on crypto, only when real klines are available */}
+        {timeframe && (asset.id === "BTC" || asset.id === "ETH") && (
+          <span style={{
+            position: "absolute", bottom: 2, right: 2,
+            fontSize: 7, color: "#333", fontFamily: "'Space Mono', monospace",
+            letterSpacing: 0.5, pointerEvents: "none",
+          }}>{timeframe}</span>
+        )}
+      </div>
 
       {/* Source label + cache indicator — always visible, small */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
@@ -3741,7 +3812,7 @@ const PrivateCreditPanel = memo(() => {
 });
 export default function MarketMonitor() {
   const [isPaused, setIsPaused] = useState(false);
-  const { assets, lastUpdated, error, wsConnected, systemStatus } = useMarketData(isPaused);
+  const { assets, lastUpdated, error, wsConnected, systemStatus, timeframe, setTimeframe } = useMarketData(isPaused);
 
   // Compute regime here so both useAlerts and MarketRegimeCard share it
   const currentRegime = useMemo(() => {
@@ -4179,12 +4250,31 @@ export default function MarketMonitor() {
 
         {/* LEFT — Asset Panel */}
         <div className="left-panel" style={{ background: "#0a0a0f", padding: 12, overflowY: "auto", display: "flex", flexDirection: "column", gap: 0 }}>
-          {/* Column headers */}
-          <div className="left-panel-headers" style={{ display: "flex", justifyContent: "space-between", padding: "4px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", marginBottom: 8 }}>
+          {/* Column headers + timeframe toggle */}
+          <div className="left-panel-headers" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", marginBottom: 8 }}>
             <span style={{ fontSize: 9, color: "#666", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>Asset</span>
-            <div style={{ display: "flex", gap: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {/* Timeframe selector — crypto sparklines only */}
+              <div style={{ display: "flex", gap: 2, alignItems: "center" }}>
+                {Object.keys(TIMEFRAMES).map(tf => (
+                  <button
+                    key={tf}
+                    onClick={() => setTimeframe(tf)}
+                    title={TIMEFRAMES[tf].desc}
+                    style={{
+                      background: timeframe === tf ? "rgba(0,255,136,0.12)" : "rgba(255,255,255,0.03)",
+                      border: `1px solid ${timeframe === tf ? "rgba(0,255,136,0.3)" : "rgba(255,255,255,0.08)"}`,
+                      color: timeframe === tf ? "#00ff88" : "#444",
+                      padding: "2px 6px", borderRadius: 3, cursor: "pointer",
+                      fontSize: 8, fontFamily: "'Space Mono', monospace",
+                      letterSpacing: 0.5, minHeight: "unset",
+                      transition: "all 0.15s",
+                    }}
+                  >{tf}</button>
+                ))}
+              </div>
               <span style={{ fontSize: 9, color: "#666", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>Price</span>
-              <span style={{ fontSize: 9, color: "#666", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>24h Chg</span>
+              <span style={{ fontSize: 9, color: "#666", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>Chg</span>
             </div>
           </div>
           {/* Grouped by category */}
@@ -4203,7 +4293,7 @@ export default function MarketMonitor() {
                   {group.label}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  {groupAssets.map(asset => <AssetCard key={asset.id} asset={asset} debugMode={debugMode} />)}
+                  {groupAssets.map(asset => <AssetCard key={asset.id} asset={asset} debugMode={debugMode} timeframe={timeframe} />)}
                 </div>
               </div>
             );

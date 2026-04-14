@@ -1283,6 +1283,32 @@ const useFearGreed = () => {
   return { ...data, refresh, refreshing };
 };
 
+// Fetches BTC dominance + 24h global volume from CoinGecko global endpoint
+// Free, no key, no CORS issues. Updates every 5 minutes.
+const useCryptoGlobal = () => {
+  const [data, setData] = useState({ btcDominance: null, totalVol24h: null });
+
+  useEffect(() => {
+    const fetch_ = async () => {
+      try {
+        const res = await fetch("https://api.coingecko.com/api/v3/global", { cache: "no-store" });
+        if (!res.ok) throw new Error(`CoinGecko global ${res.status}`);
+        const json = await res.json();
+        const d = json.data;
+        setData({
+          btcDominance: parseFloat((d.market_cap_percentage?.btc ?? 0).toFixed(1)),
+          totalVol24h:  d.total_volume?.usd ?? null,
+        });
+      } catch (e) { console.warn("[CryptoGlobal]", e.message); }
+    };
+    fetch_();
+    const i = setInterval(fetch_, 5 * 60 * 1000);
+    return () => clearInterval(i);
+  }, []);
+
+  return data;
+};
+
 const HIGHLIGHT_KEYWORDS = [
   "war", "crash", "rates", "inflation", "oil", "fed", "rate hike",
   "default", "recession", "tariff", "sanctions", "missile", "yield",
@@ -3797,13 +3823,24 @@ const STRESS_METRICS = [
   { label: "Amend & Extend Activity", value: 8, benchmark: 15, unit: "%", description: "% of maturing loans extended. Elevated = refinancing stress.", color: "#ff9944" },
 ];
 
+// Earnings dates — daysAway computed at render time so it's always accurate
 const EARNINGS_CALENDAR = [
-  { company: "Ares Capital (ARCC)",      date: "May 7, 2026",  daysAway: 27, type: "Earnings" },
-  { company: "Blue Owl (OBDC)",          date: "May 9, 2026",  daysAway: 29, type: "Earnings" },
-  { company: "Apollo Global",            date: "May 6, 2026",  daysAway: 26, type: "Earnings" },
-  { company: "FS KKR Capital",           date: "May 13, 2026", daysAway: 33, type: "Earnings" },
-  { company: "Golub Capital BDC",        date: "May 21, 2026", daysAway: 41, type: "Earnings" },
-];
+  { company: "Ares Capital (ARCC)",  date: "2026-05-07", type: "Earnings" },
+  { company: "Blue Owl (OBDC)",      date: "2026-05-09", type: "Earnings" },
+  { company: "Apollo Global",        date: "2026-05-06", type: "Earnings" },
+  { company: "FS KKR Capital",       date: "2026-05-13", type: "Earnings" },
+  { company: "Golub Capital BDC",    date: "2026-05-21", type: "Earnings" },
+].map(ev => {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const today    = new Date(); today.setHours(0, 0, 0, 0);
+  const evDate   = new Date(ev.date); evDate.setHours(0, 0, 0, 0);
+  const daysAway = Math.round((evDate - today) / msPerDay);
+  const label    = daysAway < 0  ? `${Math.abs(daysAway)}d ago`
+                 : daysAway === 0 ? "Today"
+                 : daysAway === 1 ? "Tomorrow"
+                 : `${daysAway}d`;
+  return { ...ev, daysAway, label };
+});
 
 const PC_NEWS = [
   { id: 1, headline: "Ares Capital reports Q1 non-accrual rate steady at 1.2%, beats dividend coverage estimates", source: "Bloomberg", time: "3h ago", sentiment: "bullish" },
@@ -4046,19 +4083,25 @@ const PrivateCreditPanel = memo(({ bdcPrices = {}, bdcLoading = false }) => {
               display: "flex", alignItems: "center", justifyContent: "space-between",
               background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",
               borderRadius: 6, padding: "10px 14px",
+              opacity: ev.daysAway < 0 ? 0.45 : 1,   // dim past events
             }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#e8e8e8", marginBottom: 2 }}>{ev.company}</div>
                 <div style={{ fontSize: 10, color: "#555", fontFamily: "'Space Mono', monospace" }}>{ev.type}</div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 12, color: "#aaa", fontFamily: "'Space Mono', monospace" }}>{ev.date}</div>
+                <div style={{ fontSize: 12, color: "#aaa", fontFamily: "'Space Mono', monospace" }}>
+                  {new Date(ev.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                </div>
                 <div style={{
                   fontSize: 11, fontWeight: 700, fontFamily: "'Space Mono', monospace",
-                  color: ev.daysAway <= 7 ? "#ff4466" : ev.daysAway <= 14 ? "#ffd700" : "#555",
+                  color: ev.daysAway < 0  ? "#444"
+                       : ev.daysAway <= 3  ? "#ff4466"
+                       : ev.daysAway <= 7  ? "#ffd700"
+                       : "#555",
                   marginTop: 2,
                 }}>
-                  {ev.daysAway}d away
+                  {ev.label}
                 </div>
               </div>
             </div>
@@ -4091,6 +4134,7 @@ export default function MarketMonitor() {
   const { alerts, notifications } = useAlerts(assets, currentRegime);
   const time = useClock();
   const fearGreed = useFearGreed();
+  const cryptoGlobal = useCryptoGlobal();
   const { refresh: refreshFearGreed, refreshing: fgRefreshing } = fearGreed;
   const [centerTab, setCenterTab] = useState("market");
   const [riskMode, setRiskMode] = useState("on");
@@ -4846,11 +4890,31 @@ export default function MarketMonitor() {
                   </button>
                 </div>
 
-                {/* Other stats */}
+                {/* Other stats — live from CoinGecko global endpoint */}
                 {[
-                  { label: "BTC Dominance", val: "54.2", unit: "%",  sub: "of total crypto",  color: "#f7931a" },
-                  { label: "Put/Call Ratio", val: "1.24", unit: "",   sub: "options sentiment", color: "#ff4466" },
-                  { label: "Total Vol",      val: "$847B", unit: "",  sub: "24h global",        color: "#00aaff" },
+                  {
+                    label: "BTC Dominance",
+                    val:   cryptoGlobal.btcDominance != null ? cryptoGlobal.btcDominance.toFixed(1) : "—",
+                    unit:  "%",
+                    sub:   "of total crypto mkt cap",
+                    color: "#f7931a",
+                  },
+                  {
+                    label: "Put/Call Ratio",
+                    val:   "1.24",
+                    unit:  "",
+                    sub:   "options sentiment · static",
+                    color: "#ff4466",
+                  },
+                  {
+                    label: "24H Global Vol",
+                    val:   cryptoGlobal.totalVol24h != null
+                      ? `$${(cryptoGlobal.totalVol24h / 1e9).toFixed(0)}B`
+                      : "—",
+                    unit:  "",
+                    sub:   "total crypto volume",
+                    color: "#00aaff",
+                  },
                 ].map(stat => (
                   <div key={stat.label} style={{
                     background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",

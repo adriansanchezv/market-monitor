@@ -528,20 +528,52 @@ async function fetchCryptoBaselines() {
   return results;
 }
 
+/**
+ * fetchCryptoKlines(symbol, limit = 24)
+ * Fetches real 1h candles from Binance klines endpoint.
+ * Returns array of { v: closePrice, t: openTime } — matches sparkline format.
+ * Falls back to null on any error so caller can use generated sparkline instead.
+ */
+async function fetchCryptoKlines(symbol, limit = 24) {
+  try {
+    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=${limit}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const candles = await res.json();
+    // Candle format: [openTime, open, high, low, close, volume, ...]
+    // Index 4 = close price, index 0 = open time (ms)
+    return candles.map(c => ({
+      v: parseFloat(parseFloat(c[4]).toFixed(2)),
+      t: c[0],  // openTime ms — used for tooltip timestamps
+    }));
+  } catch (e) {
+    console.warn(`[klines] ${symbol}: ${e.message}`);
+    return null;
+  }
+}
+
 const useMarketData = (isPaused = false) => {
-  // Seed from localStorage cache so crypto shows real values instantly on reload
+  // Seed from localStorage cache so crypto shows real values + sparklines instantly on reload
   const [assets, setAssets] = useState(() => {
     const saved = loadBaselines();
     return ASSET_META.map(meta => {
       const base = saved[meta.id];
+      // Restore real sparkline from cached klines if available,
+      // otherwise fall back to generated sparkline (will be replaced on first fetch)
+      let sparkline;
+      if (base?.klines?.length >= 2) {
+        sparkline = base.klines.map(k => ({ ...k }));
+      } else {
+        sparkline = generateSparkline(base?.price ?? MOCK_PRICES[meta.id].price, meta.vol);
+      }
       return {
         ...meta,
-        price:    base?.price   ?? MOCK_PRICES[meta.id].price,
-        change:   base?.change  ?? MOCK_PRICES[meta.id].change,
+        price:     base?.price    ?? MOCK_PRICES[meta.id].price,
+        change:    base?.change   ?? MOCK_PRICES[meta.id].change,
         prevClose: base?.prevClose ?? null,
-        source:   base?.source  ?? null,
-        sparkline: generateSparkline(base?.price ?? MOCK_PRICES[meta.id].price, meta.vol),
-        loading: !base,  // show loading state only if no cached baseline
+        source:    base?.source   ?? null,
+        sparkline,
+        loading: !base,
       };
     });
   });
@@ -670,36 +702,58 @@ const useMarketData = (isPaused = false) => {
   }, [isPaused]);
 
   useEffect(() => {
-    // Step 1: fetch Binance 24hr baselines directly — fast, CORS-open, no Vercel needed.
-    // This fills BTC/ETH with real prices before the WS connects (~100-300ms).
-    // Saves to localStorage so next load is instant.
-    fetchCryptoBaselines().then(baselines => {
+    // Step 1: fetch baselines + klines in parallel from Binance — fast, CORS-open.
+    // Baselines give us accurate prices and % change.
+    // Klines give us 24 real hourly candle closes for the sparkline.
+    // Both save to localStorage so next reload is instant with no flicker.
+    Promise.all([
+      fetchCryptoBaselines(),
+      fetchCryptoKlines("BTCUSDT", 24),
+      fetchCryptoKlines("ETHUSDT", 24),
+    ]).then(([baselines, btcKlines, ethKlines]) => {
       if (Object.keys(baselines).length === 0) return;
+
+      // Attach klines to each baseline entry
+      if (btcKlines?.length) baselines.BTC = { ...baselines.BTC, klines: btcKlines };
+      if (ethKlines?.length) baselines.ETH = { ...baselines.ETH, klines: ethKlines };
+
       saveBaselines(baselines);
+
       setAssets(prev => prev.map(asset => {
         const b = baselines[asset.id];
         if (!b) return asset;
-        // Build sparkline from real open → current price arc
-        const newSparkline = generateSparkline(b.openPrice, asset.vol);
-        // Replace last sparkline point with current real price
-        newSparkline[newSparkline.length - 1] = { v: b.price, t: Date.now() };
+
+        // Use real candle closes if available, otherwise fall back to generated sparkline.
+        // Ensure last point reflects current live price (klines close ~1min ago).
+        let sparkline;
+        if (b.klines?.length >= 2) {
+          sparkline = b.klines.map(k => ({ ...k }));  // copy to avoid mutation
+          // Replace the last candle's close with the live price so the
+          // sparkline tail connects to the current price card value.
+          sparkline[sparkline.length - 1] = { v: b.price, t: Date.now() };
+        } else {
+          sparkline = generateSparkline(b.openPrice, asset.vol);
+          sparkline[sparkline.length - 1] = { v: b.price, t: Date.now() };
+        }
+
         return {
           ...asset,
-          price:     b.price,
-          change:    b.change,
-          prevClose: b.prevClose,
-          source:    b.source,
+          price:      b.price,
+          change:     b.change,
+          prevClose:  b.prevClose,
+          source:     b.source,
           confidence: b.confidence,
-          status:    b.status,
-          sparkline: newSparkline,
-          loading:   false,
+          status:     b.status,
+          sparkline,
+          loading:    false,
         };
       }));
-      // Also prime _priceCache so WS updates merge correctly
+
+      // Prime _priceCache with klines so WS knows the real sparkline history
       Object.entries(baselines).forEach(([id, b]) => { _priceCache[id] = b; });
     });
 
-    // Step 2: WS connects after baseline is ready
+    // Step 2: WS + polling start — WS will push onto real sparkline from here
     connectWS();
     fetchAndUpdate();
     const pollInterval = setInterval(fetchAndUpdate, INTERVALS.PRICES);

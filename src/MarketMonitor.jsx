@@ -2575,23 +2575,27 @@ function calcPortfolio(positions, liveAssets, auxData = {}) {
     const liveAsset = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
     const aux       = auxData[pos.id];
 
-    const currentPrice  = liveAsset?.price ?? aux?.price ?? pos.avgCost;
+    const currentPrice  = liveAsset?.price ?? aux?.price ?? null;
+    const priceLoading  = currentPrice === null;  // true until any live price arrives
+    const displayPrice  = currentPrice ?? pos.avgCost;   // show cost basis as dim fallback
     const priceSource   = liveAsset ? liveAsset.source
                         : aux       ? aux.source
                         :             "cost basis";
     const priceChange   = liveAsset?.change ?? aux?.change ?? null;
     const priceTs       = liveAsset?.timestamp ?? aux?.timestamp ?? null;
-    const priceConf     = liveAsset?.confidence ?? aux?.confidence ?? "low";
+    const priceConf     = liveAsset?.confidence ?? aux?.confidence ?? (priceLoading ? "low" : "low");
     const priceStale    = liveAsset?.stale ?? false;
 
     const costBasis     = pos.shares * pos.avgCost;
-    const currentValue  = pos.shares * currentPrice;
-    const unrealizedPnL = currentValue - costBasis;
-    const unrealizedPct = costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0;
+    const currentValue  = pos.shares * displayPrice;
+    const unrealizedPnL = priceLoading ? null : currentValue - costBasis;
+    const unrealizedPct = priceLoading ? null : (costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0);
 
     return {
       ...pos,
-      currentPrice, costBasis, currentValue, unrealizedPnL, unrealizedPct,
+      currentPrice: displayPrice, costBasis, currentValue,
+      unrealizedPnL, unrealizedPct,
+      priceLoading,
       // data provenance — same fields as asset cards
       priceSource, priceChange, priceTs, priceConf, priceStale,
     };
@@ -2724,18 +2728,28 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
     boxSizing: "border-box",
   };
 
+  // Only count rows with live prices in summary totals — excludes loading rows
+  const liveRows    = rows.filter(r => !r.priceLoading);
+  const anyLoading  = rows.some(r => r.priceLoading);
+  const liveValue   = liveRows.reduce((s, r) => s + r.currentValue, 0);
+  const liveCost    = liveRows.reduce((s, r) => s + r.costBasis, 0);
+  const livePnL     = liveValue - liveCost;
+  const livePnLPct  = liveCost > 0 ? (livePnL / liveCost) * 100 : 0;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
       {/* Summary bar */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
         {[
-          { label: "Portfolio Value", value: fmt$(totalValue),                                     color: "#f0f0f0" },
-          { label: "Total P&L",       value: `${totalPnL >= 0 ? "+" : "-"}${fmt$(totalPnL)}`,     color: pnlColor(totalPnL) },
-          { label: "Return",          value: fmtPct(totalPnLPct),                                  color: pnlColor(totalPnLPct) },
+          { label: "Portfolio Value", value: liveRows.length ? fmt$(liveValue) : "—",                                             color: "#f0f0f0" },
+          { label: "Total P&L",       value: liveRows.length ? `${livePnL >= 0 ? "+" : "-"}${fmt$(livePnL)}` : "—",              color: pnlColor(livePnL) },
+          { label: "Return",          value: liveRows.length ? fmtPct(livePnLPct) : "—",                                          color: pnlColor(livePnLPct) },
         ].map(stat => (
           <div key={stat.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "10px 14px" }}>
-            <div style={{ fontSize: 9, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>{stat.label}</div>
+            <div style={{ fontSize: 9, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>
+              {stat.label}{anyLoading && liveRows.length > 0 ? <span style={{ color: "#333", marginLeft: 4 }}>partial</span> : ""}
+            </div>
             <div style={{ fontSize: 18, fontWeight: 800, color: stat.color, fontFamily: "'Space Mono', monospace" }}>{stat.value}</div>
           </div>
         ))}
@@ -2835,16 +2849,20 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
 
       {/* Position rows */}
       {rows.map(row => {
-        const isGain = row.unrealizedPnL >= 0;
-        const c = pnlColor(row.unrealizedPnL);
+        // priceLoading = true until any live data arrives (shows dim cost basis + --)
+        const hasLive = !row.priceLoading;
+        const isGain  = hasLive ? row.unrealizedPnL >= 0 : true;
+        const c       = hasLive ? pnlColor(row.unrealizedPnL) : "#444";
         return (
           <div key={row.id} className="portfolio-row" style={{
             display: "grid", gridTemplateColumns: "1fr 0.7fr 0.9fr 0.9fr 1fr 0.6fr 0.5fr",
             gap: 8, padding: "10px 10px",
-            background: isGain ? "rgba(0,255,136,0.02)" : "rgba(255,68,102,0.02)",
-            border: `1px solid ${isGain ? "rgba(0,255,136,0.08)" : "rgba(255,68,102,0.08)"}`,
+            background: hasLive ? (isGain ? "rgba(0,255,136,0.02)" : "rgba(255,68,102,0.02)") : "rgba(255,255,255,0.01)",
+            border: `1px solid ${hasLive ? (isGain ? "rgba(0,255,136,0.08)" : "rgba(255,68,102,0.08)") : "rgba(255,255,255,0.05)"}`,
             borderRadius: 6, alignItems: "center",
             borderLeft: `3px solid ${c}`,
+            opacity: row.priceLoading ? 0.7 : 1,
+            transition: "opacity 0.4s, border-color 0.4s",
           }}>
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{row.id}</div>
@@ -2853,13 +2871,16 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
             <div>
               <div style={{
                 fontSize: 12, fontFamily: "'Space Mono', monospace",
-                color: row.priceStale ? "#888" : "#ccc",
+                color: row.priceLoading ? "#555" : row.priceStale ? "#888" : "#ccc",
               }}>
-                ${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {row.priceLoading
+                  ? <span style={{ color: "#444", letterSpacing: 1 }}>—</span>
+                  : `$${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                }
               </div>
-              {/* Source + change badge — same style as asset cards */}
+              {/* % change badge + staleness — only when live data present */}
               <div style={{ display: "flex", gap: 4, marginTop: 2, alignItems: "center" }}>
-                {row.priceChange != null && (
+                {hasLive && row.priceChange != null && (
                   <span style={{
                     fontSize: 9, color: row.priceChange >= 0 ? "#00ff88" : "#ff4466",
                     fontFamily: "'Space Mono', monospace",
@@ -2867,7 +2888,10 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
                     {row.priceChange >= 0 ? "+" : ""}{row.priceChange.toFixed(2)}%
                   </span>
                 )}
-                {row.priceStale && (
+                {row.priceLoading && (
+                  <span style={{ fontSize: 8, color: "#444", fontFamily: "'Space Mono', monospace" }}>loading</span>
+                )}
+                {!row.priceLoading && row.priceStale && (
                   <span style={{
                     fontSize: 7, padding: "1px 3px", borderRadius: 2,
                     background: "rgba(255,215,0,0.1)", color: "#ffd700",
@@ -2877,20 +2901,27 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
                 )}
               </div>
               {/* Debug mode: source + timestamp */}
-              {debugMode && row.priceSource && (
+              {debugMode && (
                 <div style={{ fontSize: 8, color: "#00aaff", fontFamily: "'Space Mono', monospace", marginTop: 1 }}>
                   {row.priceSource}
                   {row.priceTs && ` · ${new Date(row.priceTs).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`}
                 </div>
               )}
             </div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.currentValue)}</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: hasLive ? "#e8e8e8" : "#444", fontFamily: "'Space Mono', monospace" }}>
+              {hasLive ? fmt$(row.currentValue) : "—"}
+            </div>
             <div className="portfolio-col-hide" style={{ fontSize: 12, color: "#666", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.costBasis)}</div>
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, color: c, fontFamily: "'Space Mono', monospace" }}>
-                {row.unrealizedPnL >= 0 ? "+" : "-"}{fmt$(row.unrealizedPnL)}
+                {hasLive && row.unrealizedPnL != null
+                  ? `${row.unrealizedPnL >= 0 ? "+" : "-"}${fmt$(row.unrealizedPnL)}`
+                  : <span style={{ color: "#333" }}>—</span>
+                }
               </div>
-              <div style={{ fontSize: 10, color: c, opacity: 0.8, fontFamily: "'Space Mono', monospace" }}>{fmtPct(row.unrealizedPct)}</div>
+              <div style={{ fontSize: 10, color: c, opacity: 0.8, fontFamily: "'Space Mono', monospace" }}>
+                {hasLive && row.unrealizedPct != null ? fmtPct(row.unrealizedPct) : ""}
+              </div>
             </div>
             <div className="portfolio-col-hide">
               <div style={{ fontSize: 10, color: "#888", fontFamily: "'Space Mono', monospace", marginBottom: 3 }}>{row.allocation.toFixed(1)}%</div>
@@ -3189,29 +3220,29 @@ const useLeveragedAssets = () => {
 
   useEffect(() => {
     const fetchAll = async () => {
-      const results = {};
-      await Promise.all(
-        LEVERAGED_ASSETS.map(async ({ id }) => {
-          try {
-            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${id}?interval=1d&range=2d`;
-            const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-            const res = await fetch(proxy, { cache: "no-store" });
-            if (!res.ok) throw new Error(`${res.status}`);
-            const data = await res.json();
-            const meta = data?.chart?.result?.[0]?.meta;
-            if (!meta?.regularMarketPrice) throw new Error("no price");
-            results[id] = {
-              price:       parseFloat((meta.regularMarketPrice).toFixed(2)),
-              change:      parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2)),
-              marketState: meta.marketState ?? "CLOSED",
-            };
-          } catch (e) {
-            results[id] = null;
-          }
-        })
-      );
-      setPrices(results);
-      setLoading(false);
+      try {
+        const symbols = LEVERAGED_ASSETS.map(a => a.id).join(",");
+        const res = await fetch(`/api/stocks?symbols=${symbols}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`/api/stocks ${res.status}`);
+        const { stocks } = await res.json();
+        // Normalise to the shape the rest of the app expects
+        const results = {};
+        LEVERAGED_ASSETS.forEach(({ id }) => {
+          const d = stocks[id];
+          results[id] = d ? {
+            price:       d.price,
+            change:      d.percentChange ?? d.change ?? 0,
+            marketState: d.marketState ?? "CLOSED",
+            source:      d.source,
+            confidence:  d.confidence,
+          } : null;
+        });
+        setPrices(results);
+      } catch (e) {
+        console.warn("[useLeveragedAssets]", e.message);
+      } finally {
+        setLoading(false);
+      }
     };
 
     fetchAll();
@@ -3449,7 +3480,7 @@ const MOMENTUM_STOCKS = [
   { id: "ZETA", label: "Zeta",     desc: "Marketing AI"       },
 ];
 
-// Fetches 3mo daily OHLCV from Yahoo via corsproxy, computes MA20/MA50
+// Fetches 3mo daily OHLCV from Yahoo via /api/stocks?history=true, computes MA20/MA50
 const useStockMomentum = () => {
   const [stocks, setStocks]   = useState({});
   const [loading, setLoading] = useState(true);
@@ -3457,57 +3488,42 @@ const useStockMomentum = () => {
 
   useEffect(() => {
     const fetchAll = async () => {
-      const results = {};
+      try {
+        const symbols = MOMENTUM_STOCKS.map(s => s.id).join(",");
+        const res = await fetch(`/api/stocks?symbols=${symbols}&history=true`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`/api/stocks ${res.status}`);
+        const { stocks: raw } = await res.json();
 
-      await Promise.all(MOMENTUM_STOCKS.map(async ({ id }) => {
-        try {
-          // 3 months of daily data — gives us 60+ candles for MA20/MA50
-          const url   = `https://query1.finance.yahoo.com/v8/finance/chart/${id}?interval=1d&range=3mo`;
-          const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-          const res   = await fetch(proxy, { cache: "no-store" });
-          if (!res.ok) throw new Error(`${res.status}`);
+        const results = {};
+        MOMENTUM_STOCKS.forEach(({ id }) => {
+          const d = raw[id];
+          if (!d?.price) { results[id] = null; return; }
 
-          const data   = await res.json();
-          const result = data?.chart?.result?.[0];
-          const meta   = result?.meta;
-          const quotes = result?.indicators?.quote?.[0];
-          const closes = quotes?.close ?? [];
-          const volumes= quotes?.volume ?? [];
+          const momentum = (d.ma20 && d.ma50)
+            ? analyzeMomentum({ price: d.price, ma20: d.ma20, ma50: d.ma50, dailyChange: d.percentChange ?? 0, volumeRatio: d.volumeRatio ?? 1 })
+            : null;
 
-          if (!meta || closes.length < 20) throw new Error("insufficient data");
-
-          const validCloses = closes.filter(c => c != null);
-          const price    = parseFloat((meta.regularMarketPrice ?? validCloses.at(-1)).toFixed(2));
-          const change   = parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2));
-
-          // Compute SMA
-          const sma = (arr, n) => {
-            const slice = arr.filter(v => v != null).slice(-n);
-            return slice.length < n ? null : parseFloat((slice.reduce((a, b) => a + b, 0) / n).toFixed(2));
+          results[id] = {
+            price:       d.price,
+            change:      d.percentChange ?? d.change ?? 0,
+            prevClose:   d.prevClose,
+            ma20:        d.ma20,
+            ma50:        d.ma50,
+            volumeRatio: d.volumeRatio ?? 1,
+            momentum,
+            marketState: d.marketState ?? "CLOSED",
+            source:      d.source,
+            confidence:  d.confidence,
           };
+        });
 
-          const ma20 = sma(validCloses, 20);
-          const ma50 = sma(validCloses, 50);
-
-          // Volume ratio: today vs 20-day avg
-          const validVols   = volumes.filter(v => v != null);
-          const avgVol20    = validVols.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
-          const todayVol    = validVols.at(-1) ?? 0;
-          const volumeRatio = avgVol20 > 0 ? todayVol / avgVol20 : 1;
-
-          const prevClose   = parseFloat((meta.chartPreviousClose ?? price).toFixed(2));
-          const momentum    = (ma20 && ma50) ? analyzeMomentum({ price, ma20, ma50, dailyChange: change, volumeRatio }) : null;
-
-          results[id] = { price, change, prevClose, ma20, ma50, volumeRatio, momentum, marketState: meta.marketState ?? "CLOSED" };
-        } catch (e) {
-          console.warn(`[Momentum] ${id}: ${e.message}`);
-          results[id] = null;
-        }
-      }));
-
-      setStocks(results);
-      setLoading(false);
-      setLastFetch(new Date());
+        setStocks(results);
+        setLastFetch(new Date());
+      } catch (e) {
+        console.warn("[useStockMomentum]", e.message);
+      } finally {
+        setLoading(false);
+      }
     };
 
     fetchAll();
@@ -3862,27 +3878,30 @@ const useBDCPrices = () => {
 
   useEffect(() => {
     const fetchAll = async () => {
-      const results = {};
-      await Promise.all(BDC_TICKERS.map(async ticker => {
-        try {
-          const url   = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=5d`;
-          const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-          const res   = await fetch(proxy, { cache: "no-store" });
-          if (!res.ok) throw new Error(`${res.status}`);
-          const data  = await res.json();
-          const meta  = data?.chart?.result?.[0]?.meta;
-          if (!meta?.regularMarketPrice) throw new Error("no price");
-          results[ticker] = {
-            price:  parseFloat((meta.regularMarketPrice).toFixed(2)),
-            change: parseFloat((meta.regularMarketChangePercent ?? 0).toFixed(2)),
-            marketState: meta.marketState ?? "CLOSED",
-          };
-        } catch (e) {
-          console.warn(`[BDC] ${ticker}: ${e.message}`);
-        }
-      }));
-      setPrices(results);
-      setLoading(false);
+      try {
+        const symbols = BDC_TICKERS.join(",");
+        const res = await fetch(`/api/stocks?symbols=${symbols}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`/api/stocks ${res.status}`);
+        const { stocks } = await res.json();
+
+        // Normalise — keep the shape the BDC panel expects
+        const results = {};
+        BDC_TICKERS.forEach(ticker => {
+          const d = stocks[ticker];
+          results[ticker] = d ? {
+            price:       d.price,
+            change:      d.percentChange ?? d.change ?? 0,
+            marketState: d.marketState ?? "CLOSED",
+            source:      d.source,
+            confidence:  d.confidence,
+          } : undefined;
+        });
+        setPrices(results);
+      } catch (e) {
+        console.warn("[useBDCPrices]", e.message);
+      } finally {
+        setLoading(false);
+      }
     };
 
     fetchAll();
@@ -4149,7 +4168,7 @@ export default function MarketMonitor() {
     ["signals", "heatmap", "chart", "quicklinks"]
   );
 
-  // Leveraged asset prices + lag signals — computed once, shared across panels
+  // Leveraged asset prices + lag signals — still via useLeveragedAssets (Binance ETFs, not in backend)
   const { prices: leveragedPrices, loading: leveragedLoading } = useLeveragedAssets();
   const btcChangeForLag = assets.find(a => a.id === "BTC")?.change ?? 0;
   const lagSignals = LEVERAGED_ASSETS.map(a => {
@@ -4158,12 +4177,51 @@ export default function MarketMonitor() {
     return { ...a, price: p.price, change: p.change, signal: detectLeadLag(btcChangeForLag, p.change) };
   });
 
-  // Stock momentum — lifted here so it isn't destroyed on tab switch
-  // StockMomentumPanel receives data as props; no fetching inside the component
+  // Momentum stocks + BDC prices now come from the central assets array (fetched server-side)
+  // useBDCPrices and useStockMomentum hooks are retained only for the Stocks tab MA20/MA50 calculations
+  // which require 3mo OHLCV — not just current price. Portfolio and BDC panel use assets directly.
   const { stocks: momentumStocks, loading: momentumLoading, lastFetch: momentumLastFetch } = useStockMomentum();
-
-  // BDC prices — lifted here so Private Credit tab doesn't refetch on every switch
   const { prices: bdcPrices, loading: bdcLoading } = useBDCPrices();
+
+  // Build auxData for portfolio from BOTH assets array AND hook fallbacks
+  // Assets array (from backend) is the primary source; hooks are fallback only
+  const assetMap = Object.fromEntries(assets.map(a => [a.id, a]));
+  const portfolioAuxData = {
+    // From central assets (backend, most reliable)
+    ...Object.fromEntries(
+      ["PLTR","SOFI","ZETA","ARCC","OBDC","FSKKR","GBDC","PCMM"]
+        .filter(id => assetMap[id]?.price)
+        .map(id => [id, {
+          price:      assetMap[id].price,
+          change:     assetMap[id].change,
+          source:     assetMap[id].source,
+          timestamp:  assetMap[id].timestamp,
+          confidence: assetMap[id].confidence,
+          stale:      assetMap[id].stale,
+        }])
+    ),
+    // Hook fallbacks (for tickers not yet in backend)
+    ...Object.fromEntries(
+      Object.entries(momentumStocks)
+        .filter(([id, d]) => d?.price && !assetMap[id]?.price)
+        .map(([id, d]) => [id, { price: d.price, change: d.change, source: "Yahoo", confidence: "medium" }])
+    ),
+    ...Object.fromEntries(
+      Object.entries(bdcPrices)
+        .filter(([id, d]) => d?.price && !assetMap[id]?.price)
+        .map(([id, d]) => [id, { price: d.price, change: d.change, source: "Yahoo", confidence: "medium" }])
+    ),
+  };
+
+  // BDC prices for Private Credit panel — prefer backend assets, fallback to hook
+  const liveBdcPrices = {
+    ...bdcPrices,
+    ...Object.fromEntries(
+      ["ARCC","OBDC","FSKKR","GBDC","PCMM"]
+        .filter(id => assetMap[id]?.price)
+        .map(id => [id, { price: assetMap[id].price, change: assetMap[id].change, marketState: assetMap[id].marketState }])
+    ),
+  };
 
   const isMarketOpen = () => getMarketStatus().isOpen;
 

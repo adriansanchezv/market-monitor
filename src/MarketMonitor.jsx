@@ -2785,15 +2785,68 @@ const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode
   const fmtPct = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
   const pnlColor = (n) => n >= 0 ? "#00ff88" : "#ff4466";
 
+  // ── Dynamic price fetcher for any ticker not in the standard hooks ──
+  // Watches the active portfolio's positions and fetches prices for tickers
+  // that aren't covered by: main assets, momentumStocks, or bdcPrices.
+  const [portfolioPrices, setPortfolioPrices] = useState({});
+
+  useEffect(() => {
+    // Build the set of tickers already covered
+    const covered = new Set([
+      ...LIVE_ASSET_IDS,
+      ...Object.keys(momentumStocks).filter(k => momentumStocks[k]?.price),
+      ...Object.keys(bdcPrices).filter(k => bdcPrices[k]?.price),
+    ]);
+
+    // Find tickers in the active portfolio that need fetching
+    const unknown = [...new Set(
+      positions.map(p => p.id).filter(id => !covered.has(id))
+    )];
+
+    if (unknown.length === 0) { setPortfolioPrices({}); return; }
+
+    let cancelled = false;
+    const fetchUnknown = async () => {
+      try {
+        const res = await fetch(`/api/stocks?symbols=${unknown.join(",")}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`/api/stocks ${res.status}`);
+        const { stocks } = await res.json();
+        if (cancelled) return;
+        const result = {};
+        unknown.forEach(id => {
+          const d = stocks[id];
+          if (d?.price) result[id] = {
+            price:      d.price,
+            change:     d.percentChange ?? d.change ?? 0,
+            source:     d.source ?? "api/stocks",
+            timestamp:  d.timestamp ?? null,
+            confidence: d.confidence ?? "medium",
+          };
+        });
+        setPortfolioPrices(result);
+      } catch (e) {
+        console.warn("[portfolioPrices]", e.message);
+      }
+    };
+
+    fetchUnknown();
+    // Refresh every 60s during session, 5min when closed
+    const interval = setInterval(fetchUnknown, getMarketStatus().isOpen ? 60_000 : 5 * 60_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  // Re-run when positions change (new ticker added) or when parent hook data arrives
+  }, [positions, Object.keys(momentumStocks).join(","), Object.keys(bdcPrices).join(",")]);
+
   const auxData = {
     ...Object.fromEntries(
       Object.entries(momentumStocks).filter(([, d]) => d?.price)
-        .map(([id, d]) => [id, { price: d.price, change: d.change ?? null, source: "Yahoo", timestamp: null, confidence: "medium" }])
+        .map(([id, d]) => [id, { price: d.price, change: d.change ?? null, source: d.source ?? "Yahoo", timestamp: null, confidence: "medium" }])
     ),
     ...Object.fromEntries(
       Object.entries(bdcPrices).filter(([, d]) => d?.price)
-        .map(([id, d]) => [id, { price: d.price, change: d.change ?? null, source: "Yahoo", timestamp: null, confidence: "medium" }])
+        .map(([id, d]) => [id, { price: d.price, change: d.change ?? null, source: d.source ?? "Yahoo", timestamp: null, confidence: "medium" }])
     ),
+    // Dynamic prices for any ticker not in the above lists
+    ...portfolioPrices,
   };
 
   const { rows } = calcPortfolio(positions, assets, auxData);
@@ -3539,7 +3592,7 @@ const useStockMomentum = () => {
             volumeRatio: d.volumeRatio ?? 1,
             momentum,
             marketState: d.marketState ?? "CLOSED",
-            source:      d.source,
+            source:      d.source ?? "api/stocks",
             confidence:  d.confidence,
           };
         });

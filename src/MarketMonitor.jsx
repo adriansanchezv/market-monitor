@@ -2554,33 +2554,137 @@ const LiveStreamPanel = memo(() => {
 // Edit PORTFOLIO_POSITIONS to match your real holdings
 // ─────────────────────────────────────────────
 
+
+// ─────────────────────────────────────────────
+// PORTFOLIO SYSTEM — v3
+// Data model, cloud sync, trade logging, metrics
+// ─────────────────────────────────────────────
+
+// ── Default seed positions (used on first load only) ──────────────
 const PORTFOLIO_POSITIONS = [
-  { id: "PLTR",  label: "Palantir",        shares: 150,  avgCost: 18.42, assetId: null,  unit: "$" },
-  { id: "SOFI",  label: "SoFi Technologies",shares: 200, avgCost: 7.85,  assetId: null,  unit: "$" },
-  { id: "ARCC",  label: "Ares Capital",     shares: 80,  avgCost: 19.50, assetId: null,  unit: "$" },
-  { id: "BTC",   label: "Bitcoin",          shares: 0.05, avgCost: 62000, assetId: "BTC", unit: "$" },
-  { id: "ETH",   label: "Ethereum",         shares: 1.2,  avgCost: 2800,  assetId: "ETH", unit: "$" },
+  { symbol: "PLTR", shares: 150,  avgCost: 18.42 },
+  { symbol: "SOFI", shares: 200,  avgCost: 7.85  },
+  { symbol: "ARCC", shares: 80,   avgCost: 19.50 },
+  { symbol: "BTC",  shares: 0.05, avgCost: 62000 },
+  { symbol: "ETH",  shares: 1.2,  avgCost: 2800  },
 ];
 
-// ─── Pure calculation helper — no UI logic ────────────────────────
-// auxData: { TICKER: { price, change, source, timestamp, confidence } }
-// Priority: main asset panel → auxData (momentum/BDC hooks) → avg cost basis
+// ── Portfolio data model ──────────────────────────────────────────
+// {
+//   id: string,
+//   name: string,
+//   initialInvestment: number,   // user-supplied starting capital
+//   createdAt: ISO string,
+//   positions: [{ symbol, shares, avgCost }],
+//   trades:    [{ id, symbol, type:"BUY"|"SELL", shares, price, timestamp }]
+// }
+// PRICES ARE NEVER STORED HERE.
+
+function newPortfolio(name, positions = [], initialInvestment = 0) {
+  return {
+    id:                `p_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+    name,
+    initialInvestment: Number(initialInvestment) || 0,
+    createdAt:         new Date().toISOString(),
+    positions,
+    trades: [],
+  };
+}
+
+// ── localStorage keys (fallback + cache) ─────────────────────────
+const LS_PORTFOLIOS = "mm_portfolios_v3";
+const LS_ACTIVE_ID  = "mm_active_portfolio";
+
+function lsLoadPortfolios() {
+  try {
+    const v3 = localStorage.getItem(LS_PORTFOLIOS);
+    if (v3) return JSON.parse(v3);
+    // Migrate v2
+    const v2 = localStorage.getItem("mm_portfolios_v2");
+    if (v2) {
+      const old = JSON.parse(v2);
+      return old.map(p => ({
+        ...newPortfolio(p.name, (p.positions || []).map(pos => ({
+          symbol:  pos.id || pos.symbol,
+          shares:  pos.shares,
+          avgCost: pos.avgCost,
+        }))),
+        id: p.id,
+        createdAt: p.createdAt || new Date().toISOString(),
+        trades: p.trades || [],
+        initialInvestment: p.initialInvestment || 0,
+      }));
+    }
+    // Fresh start
+    return [newPortfolio("Main Portfolio", PORTFOLIO_POSITIONS)];
+  } catch { return [newPortfolio("Main Portfolio", PORTFOLIO_POSITIONS)]; }
+}
+
+function lsSavePortfolios(portfolios) {
+  try { localStorage.setItem(LS_PORTFOLIOS, JSON.stringify(portfolios)); } catch {}
+}
+
+function lsLoadActiveId(portfolios) {
+  try {
+    const saved = localStorage.getItem(LS_ACTIVE_ID);
+    return portfolios.find(p => p.id === saved) ? saved : (portfolios[0]?.id ?? null);
+  } catch { return portfolios[0]?.id ?? null; }
+}
+
+function lsSaveActiveId(id) {
+  try { localStorage.setItem(LS_ACTIVE_ID, id); } catch {}
+}
+
+// ── Trade logic (pure functions) ─────────────────────────────────
+// Apply a trade to the positions array — returns new positions.
+// BUY  → find or create position, recalc weighted avgCost
+// SELL → reduce shares (remove row when shares reach 0)
+function applyTrade(positions, trade) {
+  const { symbol, type, shares, price } = trade;
+  const existing = positions.find(p => p.symbol === symbol);
+
+  if (type === "BUY") {
+    if (existing) {
+      const totalShares = existing.shares + shares;
+      const newAvg = ((existing.shares * existing.avgCost) + (shares * price)) / totalShares;
+      return positions.map(p =>
+        p.symbol === symbol
+          ? { ...p, shares: parseFloat(totalShares.toFixed(8)), avgCost: parseFloat(newAvg.toFixed(4)) }
+          : p
+      );
+    }
+    return [...positions, { symbol, shares: parseFloat(shares.toFixed(8)), avgCost: parseFloat(price.toFixed(4)) }];
+  }
+
+  if (type === "SELL") {
+    return positions
+      .map(p => p.symbol === symbol ? { ...p, shares: parseFloat((p.shares - shares).toFixed(8)) } : p)
+      .filter(p => p.shares > 0.000001);
+  }
+
+  return positions;
+}
+
+// ── Portfolio metric calculation (pure, no price fetching) ────────
+// liveAssets: the assets[] from useMarketData — the ONLY price source
+// auxData:    { TICKER: { price, change, source, ... } } from hooks
+const MAIN_ASSET_SYMBOLS = ["BTC","ETH","SPY","QQQ","VIX","WTI","DXY","TNX","GOLD"];
+
 function calcPortfolio(positions, liveAssets, auxData = {}) {
   const rows = positions.map(pos => {
-    const liveAsset = pos.assetId ? liveAssets.find(a => a.id === pos.assetId) : null;
-    const aux       = auxData[pos.id];
+    // Price priority: main asset panel → auxData → null (never hardcoded)
+    const liveAsset = liveAssets.find(a => a.id === pos.symbol || a.id === (pos.id ?? pos.symbol));
+    const aux       = auxData[pos.symbol] ?? auxData[pos.id ?? ""];
 
     const currentPrice = liveAsset?.price ?? aux?.price ?? null;
     const priceLoading = currentPrice === null;
     const displayPrice = currentPrice ?? pos.avgCost;
 
-    const priceSource = liveAsset ? liveAsset.source
-                      : aux       ? aux.source
-                      :             "cost basis";
-    const priceChange = liveAsset?.change ?? aux?.change ?? null;
-    const priceTs     = liveAsset?.timestamp ?? aux?.timestamp ?? null;
-    const priceConf   = liveAsset?.confidence ?? aux?.confidence ?? "low";
-    const priceStale  = liveAsset?.stale ?? false;
+    const priceSource  = liveAsset ? (liveAsset.source ?? "live") : aux ? (aux.source ?? "aux") : "cost basis";
+    const priceChange  = liveAsset?.change ?? aux?.change ?? null;
+    const priceTs      = liveAsset?.timestamp ?? aux?.timestamp ?? null;
+    const priceConf    = liveAsset?.confidence ?? aux?.confidence ?? "low";
+    const priceStale   = liveAsset?.stale ?? false;
 
     const costBasis     = pos.shares * pos.avgCost;
     const currentValue  = pos.shares * displayPrice;
@@ -2589,16 +2693,18 @@ function calcPortfolio(positions, liveAssets, auxData = {}) {
 
     return {
       ...pos,
+      symbol: pos.symbol ?? pos.id,
       currentPrice: displayPrice, costBasis, currentValue,
       unrealizedPnL, unrealizedPct, priceLoading,
       priceSource, priceChange, priceTs, priceConf, priceStale,
     };
   });
 
+  const liveRows    = rows.filter(r => !r.priceLoading);
   const totalValue  = rows.reduce((s, r) => s + r.currentValue, 0);
   const totalCost   = rows.reduce((s, r) => s + r.costBasis, 0);
-  const totalPnL    = totalValue - totalCost;
-  const totalPnLPct = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+  const totalPnL    = liveRows.length ? totalValue - totalCost : null;
+  const totalPnLPct = (totalPnL !== null && totalCost > 0) ? (totalPnL / totalCost) * 100 : null;
 
   return {
     rows: rows.map(r => ({
@@ -2606,130 +2712,226 @@ function calcPortfolio(positions, liveAssets, auxData = {}) {
       allocation: totalValue > 0 ? (r.currentValue / totalValue) * 100 : 0,
     })),
     totalValue, totalCost, totalPnL, totalPnLPct,
+    anyLoading: rows.some(r => r.priceLoading),
   };
 }
 
-const LIVE_ASSET_IDS = ["BTC", "ETH", "SPY", "QQQ", "VIX", "WTI", "DXY", "TNX", "GOLD"];
+// ── usePortfolioStore — central state + cloud sync hook ───────────
+// Manages all portfolios, syncs to Firestore when configured,
+// falls back to localStorage when offline or unconfigured.
+function usePortfolioStore() {
+  const [portfolios, setPortfoliosState] = useState(() => lsLoadPortfolios());
+  const [activeId,   setActiveIdState]   = useState(() => lsLoadActiveId(lsLoadPortfolios()));
+  const [userId,     setUserId]          = useState(() => localStorage.getItem("mm_user_id") || null);
+  const [syncing,    setSyncing]         = useState(false);
 
-const EMPTY_FORM = { id: "", label: "", shares: "", avgCost: "", assetId: "", unit: "$" };
+  // ── Cloud init (runs once) ─────────────────────────────────────
+  // Dynamically imports firebase.js so the app works without a config
+  const cloudRef = useRef(null);  // { savePortfolioCloud, deletePortfolioCloud }
+  const unsubRef = useRef(null);
 
-// ─── Multi-Portfolio Storage Helpers ─────────────────────────────
-// Storage key v2 — separate from old v1 "portfolio_positions"
-// On first load, migrates existing v1 positions into a default portfolio.
-const PORTFOLIOS_KEY  = "mm_portfolios_v2";
-const ACTIVE_ID_KEY   = "mm_active_portfolio";
+  useEffect(() => {
+    // Only attempt cloud sync if env vars are present
+    const projectId = typeof import.meta !== "undefined"
+      ? (import.meta.env?.VITE_FIREBASE_PROJECT_ID ?? "")
+      : "";
+    if (!projectId) return;  // no Firebase config → stay on localStorage
 
-function newPortfolio(name, positions = []) {
-  return { id: `p_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name, positions };
+    setSyncing(true);
+    import("./firebase.js").then(async fb => {
+      if (!fb.CLOUD_ENABLED) { setSyncing(false); return; }
+      cloudRef.current = fb;
+
+      // Sign in and subscribe
+      const uid = await fb.ensureSignedIn();
+      if (!uid) { setSyncing(false); return; }
+      setUserId(uid);
+
+      // Subscribe to Firestore — this is the source of truth when online
+      unsubRef.current = fb.subscribePortfolios(uid, (remotePortfolios) => {
+        if (remotePortfolios.length === 0) {
+          // First time on this device — push local portfolios to cloud
+          const local = lsLoadPortfolios();
+          local.forEach(p => fb.savePortfolioCloud(uid, p));
+        } else {
+          setPortfoliosState(remotePortfolios);
+          lsSavePortfolios(remotePortfolios);
+        }
+        setSyncing(false);
+      });
+    }).catch(e => {
+      console.warn("[Portfolio] Firebase import failed:", e.message);
+      setSyncing(false);
+    });
+
+    return () => { unsubRef.current?.(); };
+  }, []);
+
+  // ── Write helper — localStorage + optional cloud ───────────────
+  const persist = useCallback((updated, newActiveId) => {
+    lsSavePortfolios(updated);
+    setPortfoliosState(updated);
+    if (newActiveId !== undefined) {
+      lsSaveActiveId(newActiveId);
+      setActiveIdState(newActiveId);
+    }
+    // Cloud write (fire-and-forget)
+    if (cloudRef.current && userId) {
+      // We diff vs current to find what changed — simpler: just write all
+      updated.forEach(p => cloudRef.current.savePortfolioCloud(userId, p));
+    }
+  }, [userId]);
+
+  // ── CRUD operations ───────────────────────────────────────────
+  const createPortfolio = useCallback((name, initialInvestment = 0) => {
+    const p = newPortfolio(name, [], initialInvestment);
+    persist([...portfolios, p], p.id);
+    return p.id;
+  }, [portfolios, persist]);
+
+  const deletePortfolio = useCallback((id) => {
+    if (portfolios.length <= 1) return;
+    const updated = portfolios.filter(p => p.id !== id);
+    const newActive = updated.find(p => p.id === activeId)?.id ?? updated[0].id;
+    persist(updated, newActive);
+    if (cloudRef.current && userId) cloudRef.current.deletePortfolioCloud(userId, id);
+  }, [portfolios, activeId, persist, userId]);
+
+  const renamePortfolio = useCallback((id, name) => {
+    persist(portfolios.map(p => p.id === id ? { ...p, name } : p));
+  }, [portfolios, persist]);
+
+  const setInitialInvestment = useCallback((id, amount) => {
+    persist(portfolios.map(p => p.id === id ? { ...p, initialInvestment: Number(amount) || 0 } : p));
+  }, [portfolios, persist]);
+
+  const switchPortfolio = useCallback((id) => {
+    lsSaveActiveId(id);
+    setActiveIdState(id);
+  }, []);
+
+  // ── Position CRUD (scoped to one portfolio) ───────────────────
+  const updatePositions = useCallback((portfolioId, newPositions) => {
+    persist(portfolios.map(p => p.id === portfolioId ? { ...p, positions: newPositions } : p));
+  }, [portfolios, persist]);
+
+  // ── Trade logging ─────────────────────────────────────────────
+  // Logs a trade, updates positions via applyTrade, appends to trades[]
+  const logTrade = useCallback((portfolioId, tradeData) => {
+    const trade = {
+      id:        `t_${Date.now()}`,
+      symbol:    tradeData.symbol.toUpperCase(),
+      type:      tradeData.type,     // "BUY" | "SELL"
+      shares:    parseFloat(tradeData.shares),
+      price:     parseFloat(tradeData.price),
+      timestamp: tradeData.timestamp || new Date().toISOString(),
+      note:      tradeData.note || "",
+    };
+
+    const updated = portfolios.map(p => {
+      if (p.id !== portfolioId) return p;
+      const newPositions = applyTrade(p.positions, trade);
+      const newTrades    = [trade, ...(p.trades || [])].slice(0, 500); // cap at 500
+      return { ...p, positions: newPositions, trades: newTrades };
+    });
+
+    persist(updated);
+    return trade;
+  }, [portfolios, persist]);
+
+  const deleteTrade = useCallback((portfolioId, tradeId) => {
+    persist(portfolios.map(p =>
+      p.id === portfolioId
+        ? { ...p, trades: (p.trades || []).filter(t => t.id !== tradeId) }
+        : p
+    ));
+  }, [portfolios, persist]);
+
+  const activePortfolio = portfolios.find(p => p.id === activeId) ?? portfolios[0] ?? null;
+
+  return {
+    portfolios, activePortfolio, activeId, userId, syncing,
+    createPortfolio, deletePortfolio, renamePortfolio,
+    setInitialInvestment, switchPortfolio,
+    updatePositions, logTrade, deleteTrade,
+  };
 }
 
-function loadPortfolios() {
-  try {
-    const raw = localStorage.getItem(PORTFOLIOS_KEY);
-    if (raw) return JSON.parse(raw);
-    // Migrate v1 flat positions into a default portfolio
-    const v1 = localStorage.getItem("portfolio_positions");
-    const positions = v1 ? JSON.parse(v1) : PORTFOLIO_POSITIONS;
-    return [newPortfolio("Main Portfolio", positions)];
-  } catch { return [newPortfolio("Main Portfolio", PORTFOLIO_POSITIONS)]; }
-}
+// ── Form constants ────────────────────────────────────────────────
+const EMPTY_POS_FORM   = { symbol: "", shares: "", avgCost: "" };
+const EMPTY_TRADE_FORM = { symbol: "", type: "BUY", shares: "", price: "", note: "" };
+const LIVE_ASSET_IDS   = ["BTC","ETH","SPY","QQQ","VIX","WTI","DXY","TNX","GOLD"];
 
-function savePortfolios(portfolios) {
-  try { localStorage.setItem(PORTFOLIOS_KEY, JSON.stringify(portfolios)); } catch {}
-}
-
-function loadActiveId(portfolios) {
-  try {
-    const saved = localStorage.getItem(ACTIVE_ID_KEY);
-    return portfolios.find(p => p.id === saved) ? saved : portfolios[0]?.id ?? null;
-  } catch { return portfolios[0]?.id ?? null; }
-}
-
-function saveActiveId(id) {
-  try { localStorage.setItem(ACTIVE_ID_KEY, id); } catch {}
-}
-
-// ─── Portfolio Selector ────────────────────────────────────────────
-const PortfolioSelector = ({ portfolios, activeId, onSwitch, onCreate, onRename, onDelete }) => {
-  const [renaming, setRenaming] = useState(null);
+// ── Portfolio Selector ─────────────────────────────────────────────
+const PortfolioSelector = ({ portfolios, activeId, syncing, onSwitch, onCreate, onRename, onDelete }) => {
+  const [renaming,  setRenaming]  = useState(null);
   const [renameVal, setRenameVal] = useState("");
-  const [creating, setCreating]  = useState(false);
-  const [newName, setNewName]    = useState("");
+  const [creating,  setCreating]  = useState(false);
+  const [newName,   setNewName]   = useState("");
+  const [newInvest, setNewInvest] = useState("");
 
   const commitRename = () => {
     if (renameVal.trim()) onRename(renaming, renameVal.trim());
     setRenaming(null); setRenameVal("");
   };
   const commitCreate = () => {
-    if (newName.trim()) onCreate(newName.trim());
-    setCreating(false); setNewName("");
+    if (newName.trim()) onCreate(newName.trim(), newInvest);
+    setCreating(false); setNewName(""); setNewInvest("");
   };
 
-  const btnBase = {
-    background: "none", border: "none", cursor: "pointer",
-    fontFamily: "'Space Mono', monospace", fontSize: 11,
-    padding: "6px 10px", transition: "all 0.15s",
-  };
-  const inputStyle = {
-    background: "rgba(255,255,255,0.07)", border: "1px solid rgba(0,170,255,0.3)",
-    borderRadius: 4, color: "#e8e8e8", fontSize: 11,
-    fontFamily: "'Space Mono', monospace", padding: "4px 8px", outline: "none",
-  };
+  const base = { background:"none", border:"none", cursor:"pointer", fontFamily:"'Space Mono',monospace", fontSize:11, padding:"6px 10px", transition:"all 0.15s" };
+  const inp  = { background:"rgba(255,255,255,0.07)", border:"1px solid rgba(0,170,255,0.3)", borderRadius:4, color:"#e8e8e8", fontSize:11, fontFamily:"'Space Mono',monospace", padding:"4px 8px", outline:"none" };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 2, overflowX: "auto",
-        borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: 0 }}>
+    <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:2, overflowX:"auto", borderBottom:"1px solid rgba(255,255,255,0.07)", paddingBottom:0 }}>
         {portfolios.map(p => {
           const isActive = p.id === activeId;
           return (
-            <div key={p.id} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+            <div key={p.id} style={{ display:"flex", alignItems:"center", flexShrink:0 }}>
               {renaming === p.id ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px" }}>
-                  <input autoFocus style={{ ...inputStyle, width: 110 }} value={renameVal}
-                    onChange={e => setRenameVal(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") setRenaming(null); }} />
-                  <button onClick={commitRename} style={{ ...btnBase, color: "#00ff88", fontSize: 10, padding: "2px 6px" }}>✓</button>
-                  <button onClick={() => setRenaming(null)} style={{ ...btnBase, color: "#555", fontSize: 10, padding: "2px 6px" }}>✕</button>
+                <div style={{ display:"flex", alignItems:"center", gap:4, padding:"4px 6px" }}>
+                  <input autoFocus style={{ ...inp, width:110 }} value={renameVal}
+                    onChange={e=>setRenameVal(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==="Enter") commitRename(); if(e.key==="Escape") setRenaming(null); }} />
+                  <button onClick={commitRename} style={{ ...base, color:"#00ff88", fontSize:10, padding:"2px 6px" }}>✓</button>
+                  <button onClick={()=>setRenaming(null)} style={{ ...base, color:"#555", fontSize:10, padding:"2px 6px" }}>✕</button>
                 </div>
               ) : (
-                <button
-                  onClick={() => onSwitch(p.id)}
-                  onDoubleClick={() => { setRenaming(p.id); setRenameVal(p.name); }}
-                  style={{
-                    ...btnBase,
-                    color: isActive ? "#00aaff" : "#555",
-                    borderBottom: isActive ? "2px solid #00aaff" : "2px solid transparent",
-                    background: isActive ? "rgba(0,170,255,0.06)" : "none",
-                    letterSpacing: 0.5, textTransform: "uppercase", paddingBottom: 8,
-                  }}
-                  title="Double-click to rename"
-                >{p.name}</button>
+                <button onClick={()=>onSwitch(p.id)} onDoubleClick={()=>{ setRenaming(p.id); setRenameVal(p.name); }}
+                  style={{ ...base, color:isActive?"#00aaff":"#555", borderBottom:isActive?"2px solid #00aaff":"2px solid transparent", background:isActive?"rgba(0,170,255,0.06)":"none", letterSpacing:0.5, textTransform:"uppercase", paddingBottom:8 }}
+                  title="Double-click to rename">
+                  {p.name}
+                </button>
               )}
               {isActive && portfolios.length > 1 && renaming !== p.id && (
-                <button onClick={() => onDelete(p.id)}
-                  style={{ ...btnBase, color: "#333", fontSize: 9, padding: "0 4px 8px 0" }}
-                  title="Delete portfolio">×</button>
+                <button onClick={()=>onDelete(p.id)} style={{ ...base, color:"#333", fontSize:9, padding:"0 4px 8px 0" }} title="Delete portfolio">×</button>
               )}
             </div>
           );
         })}
+
         {creating ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", flexShrink: 0 }}>
-            <input autoFocus placeholder="Portfolio name" style={{ ...inputStyle, width: 130 }}
-              value={newName} onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") commitCreate(); if (e.key === "Escape") setCreating(false); }} />
-            <button onClick={commitCreate} style={{ ...btnBase, color: "#00ff88", fontSize: 10, padding: "2px 6px" }}>✓</button>
-            <button onClick={() => setCreating(false)} style={{ ...btnBase, color: "#555", fontSize: 10, padding: "2px 6px" }}>✕</button>
+          <div style={{ display:"flex", alignItems:"center", gap:4, padding:"4px 6px", flexShrink:0 }}>
+            <input autoFocus placeholder="Portfolio name" style={{ ...inp, width:120 }} value={newName}
+              onChange={e=>setNewName(e.target.value)}
+              onKeyDown={e=>{ if(e.key==="Enter") commitCreate(); if(e.key==="Escape") setCreating(false); }} />
+            <input placeholder="Initial $" style={{ ...inp, width:72 }} value={newInvest}
+              onChange={e=>setNewInvest(e.target.value)} type="number" min="0" />
+            <button onClick={commitCreate} style={{ ...base, color:"#00ff88", fontSize:10, padding:"2px 6px" }}>✓</button>
+            <button onClick={()=>setCreating(false)} style={{ ...base, color:"#555", fontSize:10, padding:"2px 6px" }}>✕</button>
           </div>
         ) : (
-          <button onClick={() => setCreating(true)}
-            style={{ ...btnBase, color: "#333", fontSize: 14, padding: "0 8px 8px", letterSpacing: 0 }}
-            title="New portfolio">+</button>
+          <button onClick={()=>setCreating(true)} style={{ ...base, color:"#333", fontSize:14, padding:"0 8px 8px", letterSpacing:0 }} title="New portfolio">+</button>
+        )}
+
+        {/* Sync indicator */}
+        {syncing && (
+          <span style={{ fontSize:8, color:"#00aaff", fontFamily:"'Space Mono',monospace", padding:"0 8px", opacity:0.7 }}>↻ sync</span>
         )}
       </div>
       {portfolios.length > 1 && (
-        <div style={{ fontSize: 8, color: "#333", fontFamily: "'Space Mono', monospace", padding: "3px 2px 0" }}>
+        <div style={{ fontSize:8, color:"#333", fontFamily:"'Space Mono',monospace", padding:"3px 2px 0" }}>
           Double-click tab to rename
         </div>
       )}
@@ -2737,303 +2939,410 @@ const PortfolioSelector = ({ portfolios, activeId, onSwitch, onCreate, onRename,
   );
 };
 
-// ─── PortfolioPanel ────────────────────────────────────────────────
+// ── Trade Form ────────────────────────────────────────────────────
+const TradeForm = ({ onSubmit, onCancel, assets, auxData, defaultSymbol="" }) => {
+  const [form,  setForm]  = useState({ ...EMPTY_TRADE_FORM, symbol: defaultSymbol });
+  const [error, setError] = useState("");
+
+  // Auto-fill price from marketData when symbol + type are set
+  const livePriceForSymbol = (sym) => {
+    const s = sym.toUpperCase();
+    const a = assets.find(x => x.id === s);
+    if (a?.price) return a.price;
+    return auxData[s]?.price ?? "";
+  };
+
+  const handleSymbolBlur = () => {
+    if (!form.price) {
+      const p = livePriceForSymbol(form.symbol);
+      if (p) setForm(f => ({ ...f, price: String(p) }));
+    }
+  };
+
+  const submit = () => {
+    const symbol = form.symbol.trim().toUpperCase();
+    const shares = parseFloat(form.shares);
+    const price  = parseFloat(form.price);
+    if (!symbol)              return setError("Symbol required");
+    if (isNaN(shares) || shares <= 0) return setError("Shares must be > 0");
+    if (isNaN(price)  || price  <= 0) return setError("Price must be > 0");
+    onSubmit({ symbol, type: form.type, shares, price, note: form.note, timestamp: new Date().toISOString() });
+  };
+
+  const inp = { background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:4, padding:"6px 8px", color:"#e8e8e8", fontSize:11, fontFamily:"'Space Mono',monospace", outline:"none", width:"100%", boxSizing:"border-box" };
+  const typeBtn = (t) => ({
+    padding:"5px 14px", borderRadius:4, cursor:"pointer", fontSize:11, fontFamily:"'Space Mono',monospace", letterSpacing:0.5,
+    border: form.type === t ? `1px solid ${t==="BUY"?"rgba(0,255,136,0.4)":"rgba(255,68,102,0.4)"}` : "1px solid rgba(255,255,255,0.08)",
+    background: form.type === t ? (t==="BUY"?"rgba(0,255,136,0.12)":"rgba(255,68,102,0.12)") : "none",
+    color: form.type === t ? (t==="BUY"?"#00ff88":"#ff4466") : "#555",
+  });
+
+  return (
+    <div style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(0,170,255,0.2)", borderRadius:8, padding:14 }}>
+      <div style={{ fontSize:11, color:"#00aaff", fontFamily:"'Space Mono',monospace", letterSpacing:1, marginBottom:12 }}>LOG TRADE</div>
+
+      {/* BUY / SELL toggle */}
+      <div style={{ display:"flex", gap:6, marginBottom:10 }}>
+        <button onClick={()=>setForm(f=>({...f,type:"BUY"}))}  style={typeBtn("BUY")}>BUY</button>
+        <button onClick={()=>setForm(f=>({...f,type:"SELL"}))} style={typeBtn("SELL")}>SELL</button>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:8 }}>
+        <div>
+          <div style={{ fontSize:9, color:"#555", fontFamily:"'Space Mono',monospace", marginBottom:3 }}>SYMBOL *</div>
+          <input style={{ ...inp, textTransform:"uppercase" }} value={form.symbol}
+            onChange={e=>setForm(f=>({...f,symbol:e.target.value}))}
+            onBlur={handleSymbolBlur} placeholder="PLTR" />
+        </div>
+        <div>
+          <div style={{ fontSize:9, color:"#555", fontFamily:"'Space Mono',monospace", marginBottom:3 }}>SHARES *</div>
+          <input style={inp} type="number" step="any" min="0" value={form.shares}
+            onChange={e=>setForm(f=>({...f,shares:e.target.value}))} placeholder="100" />
+        </div>
+        <div>
+          <div style={{ fontSize:9, color:"#555", fontFamily:"'Space Mono',monospace", marginBottom:3 }}>PRICE *</div>
+          <input style={inp} type="number" step="any" min="0" value={form.price}
+            onChange={e=>setForm(f=>({...f,price:e.target.value}))} placeholder="auto" />
+        </div>
+      </div>
+
+      <div style={{ marginBottom:8 }}>
+        <div style={{ fontSize:9, color:"#555", fontFamily:"'Space Mono',monospace", marginBottom:3 }}>NOTE (optional)</div>
+        <input style={inp} value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))} placeholder="e.g. earnings play, DCA" />
+      </div>
+
+      {error && <div style={{ fontSize:10, color:"#ff4466", fontFamily:"'Space Mono',monospace", marginBottom:8 }}>{error}</div>}
+
+      <div style={{ display:"flex", gap:8 }}>
+        <button onClick={submit} style={{ background:"rgba(0,170,255,0.15)", border:"1px solid rgba(0,170,255,0.3)", color:"#00aaff", borderRadius:4, padding:"6px 16px", cursor:"pointer", fontSize:11, fontFamily:"'Space Mono',monospace" }}>
+          LOG
+        </button>
+        <button onClick={onCancel} style={{ background:"none", border:"1px solid rgba(255,255,255,0.08)", color:"#555", borderRadius:4, padding:"6px 12px", cursor:"pointer", fontSize:11, fontFamily:"'Space Mono',monospace" }}>
+          CANCEL
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ── Trade History ─────────────────────────────────────────────────
+const TradeHistory = ({ trades = [], onDelete }) => {
+  const [open, setOpen] = useState(false);
+  if (trades.length === 0) return null;
+
+  return (
+    <div>
+      <button onClick={()=>setOpen(o=>!o)} style={{ background:"none", border:"none", cursor:"pointer", color:"#444", fontSize:10, fontFamily:"'Space Mono',monospace", letterSpacing:1, padding:"4px 0", display:"flex", alignItems:"center", gap:6 }}>
+        <span style={{ fontSize:8 }}>{open?"▼":"▶"}</span>
+        TRADE HISTORY ({trades.length})
+      </button>
+      {open && (
+        <div style={{ display:"flex", flexDirection:"column", gap:4, marginTop:6 }}>
+          {/* Headers */}
+          <div style={{ display:"grid", gridTemplateColumns:"0.5fr 0.8fr 0.6fr 0.7fr 0.7fr 1.5fr 0.4fr", gap:6, padding:"0 8px" }}>
+            {["TYPE","SYMBOL","SHARES","PRICE","DATE","NOTE",""].map(h=>(
+              <span key={h} style={{ fontSize:8, color:"#333", letterSpacing:1, fontFamily:"'Space Mono',monospace" }}>{h}</span>
+            ))}
+          </div>
+          {trades.map(t => {
+            const isBuy = t.type === "BUY";
+            return (
+              <div key={t.id} style={{ display:"grid", gridTemplateColumns:"0.5fr 0.8fr 0.6fr 0.7fr 0.7fr 1.5fr 0.4fr", gap:6, padding:"6px 8px", background:"rgba(255,255,255,0.01)", borderRadius:4, alignItems:"center", borderLeft:`2px solid ${isBuy?"#00ff88":"#ff4466"}` }}>
+                <span style={{ fontSize:10, fontWeight:700, color:isBuy?"#00ff88":"#ff4466", fontFamily:"'Space Mono',monospace" }}>{t.type}</span>
+                <span style={{ fontSize:10, color:"#ccc", fontFamily:"'Space Mono',monospace" }}>{t.symbol}</span>
+                <span style={{ fontSize:10, color:"#888", fontFamily:"'Space Mono',monospace" }}>{t.shares}</span>
+                <span style={{ fontSize:10, color:"#888", fontFamily:"'Space Mono',monospace" }}>${t.price?.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                <span style={{ fontSize:9, color:"#555", fontFamily:"'Space Mono',monospace" }}>
+                  {t.timestamp ? new Date(t.timestamp).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "—"}
+                </span>
+                <span style={{ fontSize:9, color:"#444", fontFamily:"'Space Mono',monospace", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.note||""}</span>
+                <button onClick={()=>onDelete(t.id)} style={{ background:"none", border:"none", color:"#333", cursor:"pointer", fontSize:11, padding:"0 2px" }} title="Remove">×</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── PortfolioPanel ────────────────────────────────────────────────
 const PortfolioPanel = ({ assets, momentumStocks = {}, bdcPrices = {}, debugMode = false }) => {
 
-  const [portfolios, setPortfolios] = useState(() => loadPortfolios());
-  const [activeId,   setActiveId]   = useState(() => loadActiveId(loadPortfolios()));
+  const store = usePortfolioStore();
+  const {
+    portfolios, activePortfolio, activeId, syncing,
+    createPortfolio, deletePortfolio, renamePortfolio,
+    setInitialInvestment, switchPortfolio,
+    updatePositions, logTrade, deleteTrade,
+  } = store;
 
-  const activePortfolio = portfolios.find(p => p.id === activeId) ?? portfolios[0];
-  const positions       = activePortfolio?.positions ?? [];
+  const positions = activePortfolio?.positions ?? [];
+  const trades    = activePortfolio?.trades ?? [];
 
-  const saveAll = (updated, newActiveId) => {
-    savePortfolios(updated);
-    setPortfolios(updated);
-    if (newActiveId !== undefined) { saveActiveId(newActiveId); setActiveId(newActiveId); }
-  };
-
-  const updatePositions = (newPositions) => {
-    const updated = portfolios.map(p => p.id === activeId ? { ...p, positions: newPositions } : p);
-    saveAll(updated);
-  };
-
-  const handleCreate = (name) => {
-    const p = newPortfolio(name, []);
-    saveAll([...portfolios, p], p.id);
-  };
-
-  const handleSwitch = (id) => {
-    saveActiveId(id); setActiveId(id);
-    setShowForm(false); setEditingId(null); setForm(EMPTY_FORM);
-  };
-
-  const handleRename = (id, name) =>
-    saveAll(portfolios.map(p => p.id === id ? { ...p, name } : p));
-
-  const handleDelete = (id) => {
-    if (portfolios.length <= 1) return;
-    const updated = portfolios.filter(p => p.id !== id);
-    saveAll(updated, updated[0].id);
-  };
-
-  const [editingId, setEditingId] = useState(null);
-  const [showForm, setShowForm]   = useState(false);
-  const [form, setForm]           = useState(EMPTY_FORM);
-  const [formError, setFormError] = useState("");
-
-  const fmt$ = (n) => `$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const fmtPct = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
-  const pnlColor = (n) => n >= 0 ? "#00ff88" : "#ff4466";
-
-  // ── Dynamic price fetcher for any ticker not in the standard hooks ──
-  // Watches the active portfolio's positions and fetches prices for tickers
-  // that aren't covered by: main assets, momentumStocks, or bdcPrices.
+  // ── Dynamic price fetcher for uncovered tickers ───────────────
   const [portfolioPrices, setPortfolioPrices] = useState({});
-
   useEffect(() => {
-    // Build the set of tickers already covered
     const covered = new Set([
       ...LIVE_ASSET_IDS,
       ...Object.keys(momentumStocks).filter(k => momentumStocks[k]?.price),
       ...Object.keys(bdcPrices).filter(k => bdcPrices[k]?.price),
     ]);
-
-    // Find tickers in the active portfolio that need fetching
-    const unknown = [...new Set(
-      positions.map(p => p.id).filter(id => !covered.has(id))
-    )];
-
+    const unknown = [...new Set(positions.map(p=>p.symbol).filter(s=>s&&!covered.has(s)))];
     if (unknown.length === 0) { setPortfolioPrices({}); return; }
-
     let cancelled = false;
-    const fetchUnknown = async () => {
+    const go = async () => {
       try {
-        const res = await fetch(`/api/stocks?symbols=${unknown.join(",")}`, { cache: "no-store" });
+        const res = await fetch(`/api/stocks?symbols=${unknown.join(",")}`, { cache:"no-store" });
         if (!res.ok) throw new Error(`/api/stocks ${res.status}`);
         const { stocks } = await res.json();
         if (cancelled) return;
         const result = {};
         unknown.forEach(id => {
           const d = stocks[id];
-          if (d?.price) result[id] = {
-            price:      d.price,
-            change:     d.percentChange ?? d.change ?? 0,
-            source:     d.source ?? "api/stocks",
-            timestamp:  d.timestamp ?? null,
-            confidence: d.confidence ?? "medium",
-          };
+          if (d?.price) result[id] = { price:d.price, change:d.percentChange??d.change??0, source:d.source??"api/stocks", timestamp:d.timestamp??null, confidence:d.confidence??"medium" };
         });
         setPortfolioPrices(result);
-      } catch (e) {
-        console.warn("[portfolioPrices]", e.message);
-      }
+      } catch (e) { console.warn("[portfolioPrices]", e.message); }
     };
-
-    fetchUnknown();
-    // Refresh every 60s during session, 5min when closed
-    const interval = setInterval(fetchUnknown, getMarketStatus().isOpen ? 60_000 : 5 * 60_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  // Re-run when positions change (new ticker added) or when parent hook data arrives
+    go();
+    const iv = setInterval(go, getMarketStatus().isOpen ? 60_000 : 5*60_000);
+    return () => { cancelled = true; clearInterval(iv); };
   }, [positions, Object.keys(momentumStocks).join(","), Object.keys(bdcPrices).join(",")]);
 
+  // ── Build auxData ─────────────────────────────────────────────
   const auxData = {
-    ...Object.fromEntries(
-      Object.entries(momentumStocks).filter(([, d]) => d?.price)
-        .map(([id, d]) => [id, { price: d.price, change: d.change ?? null, source: d.source ?? "Yahoo", timestamp: null, confidence: "medium" }])
-    ),
-    ...Object.fromEntries(
-      Object.entries(bdcPrices).filter(([, d]) => d?.price)
-        .map(([id, d]) => [id, { price: d.price, change: d.change ?? null, source: d.source ?? "Yahoo", timestamp: null, confidence: "medium" }])
-    ),
-    // Dynamic prices for any ticker not in the above lists
+    ...Object.fromEntries(Object.entries(momentumStocks).filter(([,d])=>d?.price).map(([id,d])=>[id,{price:d.price,change:d.change??null,source:d.source??"api/stocks",timestamp:null,confidence:"medium"}])),
+    ...Object.fromEntries(Object.entries(bdcPrices).filter(([,d])=>d?.price).map(([id,d])=>[id,{price:d.price,change:d.change??null,source:d.source??"api/stocks",timestamp:null,confidence:"medium"}])),
     ...portfolioPrices,
   };
 
-  const { rows } = calcPortfolio(positions, assets, auxData);
+  const { rows, totalValue, totalCost, totalPnL, totalPnLPct, anyLoading } = calcPortfolio(positions, assets, auxData);
+  const liveRows = rows.filter(r=>!r.priceLoading);
 
-  const liveRows   = rows.filter(r => !r.priceLoading);
-  const anyLoading = rows.some(r => r.priceLoading);
-  const liveValue  = liveRows.reduce((s, r) => s + r.currentValue, 0);
-  const liveCost   = liveRows.reduce((s, r) => s + r.costBasis, 0);
-  const livePnL    = liveValue - liveCost;
-  const livePnLPct = liveCost > 0 ? (livePnL / liveCost) * 100 : 0;
+  // Vs initialInvestment (if set)
+  const initInvest = activePortfolio?.initialInvestment ?? 0;
+  const vsInitial  = (initInvest > 0 && totalValue > 0) ? ((totalValue - initInvest) / initInvest * 100) : null;
 
-  const openAdd  = () => { setForm(EMPTY_FORM); setEditingId(null); setFormError(""); setShowForm(true); };
-  const openEdit = (pos) => { setForm({ ...pos, shares: String(pos.shares), avgCost: String(pos.avgCost) }); setEditingId(pos.id); setFormError(""); setShowForm(true); };
-  const closeForm = () => { setShowForm(false); setEditingId(null); setForm(EMPTY_FORM); setFormError(""); };
+  // ── UI state ──────────────────────────────────────────────────
+  const [showAddPos,  setShowAddPos]  = useState(false);
+  const [showTrade,   setShowTrade]   = useState(false);
+  const [editingPos,  setEditingPos]  = useState(null);
+  const [posForm,     setPosForm]     = useState(EMPTY_POS_FORM);
+  const [posError,    setPosError]    = useState("");
+  const [showInitInv, setShowInitInv] = useState(false);
+  const [initInvInput,setInitInvInput]= useState("");
 
-  const submitForm = () => {
-    const id      = form.id.trim().toUpperCase();
-    const shares  = parseFloat(form.shares);
-    const avgCost = parseFloat(form.avgCost);
-    if (!id) return setFormError("Ticker is required");
-    if (isNaN(shares) || shares <= 0) return setFormError("Shares must be > 0");
-    if (isNaN(avgCost) || avgCost <= 0) return setFormError("Avg cost must be > 0");
-    if (!editingId && positions.find(p => p.id === id)) return setFormError(`${id} already exists in this portfolio`);
-    const entry = { id, label: form.label.trim() || id, shares, avgCost, assetId: LIVE_ASSET_IDS.includes(id) ? id : null, unit: "$" };
-    updatePositions(editingId ? positions.map(p => p.id === editingId ? entry : p) : [...positions, entry]);
-    closeForm();
+  const handleSwitchPortfolio = (id) => {
+    switchPortfolio(id);
+    setShowAddPos(false); setShowTrade(false); setEditingPos(null);
+    setPosForm(EMPTY_POS_FORM); setPosError("");
   };
 
-  const deletePosition = (id) => updatePositions(positions.filter(p => p.id !== id));
+  // ── Position form handlers ────────────────────────────────────
+  const openAddPos  = () => { setPosForm(EMPTY_POS_FORM); setEditingPos(null); setPosError(""); setShowAddPos(true); setShowTrade(false); };
+  const openEditPos = (pos) => { setPosForm({ symbol:pos.symbol, shares:String(pos.shares), avgCost:String(pos.avgCost) }); setEditingPos(pos.symbol); setPosError(""); setShowAddPos(true); setShowTrade(false); };
+  const closePos    = () => { setShowAddPos(false); setEditingPos(null); setPosForm(EMPTY_POS_FORM); setPosError(""); };
 
-  const inputStyle = {
-    background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: 4, padding: "6px 10px", color: "#e8e8e8", fontSize: 12,
-    fontFamily: "'Space Mono', monospace", width: "100%", outline: "none", boxSizing: "border-box",
+  const submitPos = () => {
+    const symbol  = posForm.symbol.trim().toUpperCase();
+    const shares  = parseFloat(posForm.shares);
+    const avgCost = parseFloat(posForm.avgCost);
+    if (!symbol)            return setPosError("Symbol required");
+    if (isNaN(shares)||shares<=0)  return setPosError("Shares must be > 0");
+    if (isNaN(avgCost)||avgCost<=0)return setPosError("Avg cost must be > 0");
+    if (!editingPos && positions.find(p=>p.symbol===symbol)) return setPosError(`${symbol} already in this portfolio`);
+    const entry = { symbol, shares, avgCost };
+    const updated = editingPos
+      ? positions.map(p=>p.symbol===editingPos?entry:p)
+      : [...positions, entry];
+    updatePositions(activeId, updated);
+    closePos();
   };
+
+  const deletePos = (symbol) => updatePositions(activeId, positions.filter(p=>p.symbol!==symbol));
+
+  const handleLogTrade = (tradeData) => {
+    logTrade(activeId, tradeData);
+    setShowTrade(false);
+  };
+
+  const fmt$ = (n) => `$${Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+  const fmtPct = (n) => `${n>=0?"+":""}${n.toFixed(2)}%`;
+  const pnlColor = (n) => n===null?"#555":n>=0?"#00ff88":"#ff4466";
+
+  const inputStyle = { background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:4, padding:"6px 8px", color:"#e8e8e8", fontSize:11, fontFamily:"'Space Mono',monospace", width:"100%", outline:"none", boxSizing:"border-box" };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
 
-      {/* Portfolio selector */}
+      {/* ── Selector ─────────────────────────────────────────── */}
       <PortfolioSelector
-        portfolios={portfolios} activeId={activeId}
-        onSwitch={handleSwitch} onCreate={handleCreate}
-        onRename={handleRename} onDelete={handleDelete}
+        portfolios={portfolios} activeId={activeId} syncing={syncing}
+        onSwitch={handleSwitchPortfolio} onCreate={createPortfolio}
+        onRename={renamePortfolio} onDelete={deletePortfolio}
       />
 
-      {/* Summary bar */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+      {/* ── Summary cards ────────────────────────────────────── */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8 }}>
         {[
-          { label: "Portfolio Value", value: liveRows.length ? fmt$(liveValue) : "—",                                 color: "#f0f0f0" },
-          { label: "Total P&L",       value: liveRows.length ? `${livePnL >= 0 ? "+" : "-"}${fmt$(livePnL)}` : "—",  color: pnlColor(livePnL) },
-          { label: "Return",          value: liveRows.length ? fmtPct(livePnLPct) : "—",                               color: pnlColor(livePnLPct) },
+          { label:"Portfolio Value", value: liveRows.length ? fmt$(totalValue) : "—",  sub: anyLoading&&liveRows.length?"partial":"", color:"#f0f0f0" },
+          { label:"Total P&L",       value: totalPnL!==null ? `${totalPnL>=0?"+":"-"}${fmt$(totalPnL)}` : "—", sub:"vs cost basis", color:pnlColor(totalPnL) },
+          {
+            label: initInvest > 0 ? "Return vs Initial" : "Return",
+            value: (initInvest>0&&vsInitial!==null) ? fmtPct(vsInitial) : (totalPnLPct!==null?fmtPct(totalPnLPct):"—"),
+            sub:   initInvest>0 ? `$${initInvest.toLocaleString()} invested` : "vs cost basis",
+            color: pnlColor(initInvest>0?vsInitial:totalPnLPct),
+          },
         ].map(stat => (
-          <div key={stat.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "10px 14px" }}>
-            <div style={{ fontSize: 9, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>
-              {stat.label}{anyLoading && liveRows.length > 0 ? <span style={{ color: "#333", marginLeft: 4 }}>partial</span> : ""}
+          <div key={stat.label} style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:8, padding:"10px 14px" }}>
+            <div style={{ fontSize:9, color:"#555", letterSpacing:1.5, textTransform:"uppercase", fontFamily:"'Space Mono',monospace", marginBottom:4 }}>
+              {stat.label}{stat.sub ? <span style={{ color:"#333", marginLeft:4, fontWeight:400 }}>{stat.sub}</span> : ""}
             </div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: stat.color, fontFamily: "'Space Mono', monospace" }}>{stat.value}</div>
+            <div style={{ fontSize:18, fontWeight:800, color:stat.color, fontFamily:"'Space Mono',monospace", lineHeight:1.1 }}>{stat.value}</div>
           </div>
         ))}
       </div>
 
-      {/* Add / Edit form */}
-      {showForm && (
-        <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(0,170,255,0.2)", borderRadius: 8, padding: 16 }}>
-          <div style={{ fontSize: 11, color: "#00aaff", fontFamily: "'Space Mono', monospace", letterSpacing: 1, marginBottom: 12 }}>
-            {editingId ? `EDIT — ${editingId}` : `ADD TO ${(activePortfolio?.name ?? "").toUpperCase()}`}
+      {/* ── Initial investment editor ─────────────────────────── */}
+      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        {showInitInv ? (
+          <>
+            <span style={{ fontSize:10, color:"#555", fontFamily:"'Space Mono',monospace" }}>Initial $</span>
+            <input type="number" min="0" style={{ ...inputStyle, width:120 }} value={initInvInput}
+              onChange={e=>setInitInvInput(e.target.value)}
+              onKeyDown={e=>{ if(e.key==="Enter"){ setInitialInvestment(activeId,initInvInput); setShowInitInv(false); } if(e.key==="Escape") setShowInitInv(false); }}
+              placeholder={String(initInvest||"")} autoFocus />
+            <button onClick={()=>{ setInitialInvestment(activeId,initInvInput); setShowInitInv(false); }} style={{ background:"none", border:"1px solid rgba(0,255,136,0.3)", color:"#00ff88", borderRadius:3, padding:"3px 8px", cursor:"pointer", fontSize:10, fontFamily:"'Space Mono',monospace" }}>SET</button>
+            <button onClick={()=>setShowInitInv(false)} style={{ background:"none", border:"none", color:"#444", cursor:"pointer", fontSize:10 }}>✕</button>
+          </>
+        ) : (
+          <button onClick={()=>{ setInitInvInput(String(initInvest||"")); setShowInitInv(true); }} style={{ background:"none", border:"none", color:"#333", cursor:"pointer", fontSize:9, fontFamily:"'Space Mono',monospace", letterSpacing:1 }}>
+            {initInvest>0 ? `INITIAL: $${initInvest.toLocaleString()} ✎` : "+ SET INITIAL INVESTMENT"}
+          </button>
+        )}
+      </div>
+
+      {/* ── Add position / Log trade forms ───────────────────── */}
+      {showAddPos && (
+        <div style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(0,170,255,0.2)", borderRadius:8, padding:14 }}>
+          <div style={{ fontSize:11, color:"#00aaff", fontFamily:"'Space Mono',monospace", letterSpacing:1, marginBottom:10 }}>
+            {editingPos ? `EDIT — ${editingPos}` : "ADD POSITION"}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
-            <div>
-              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>TICKER *</div>
-              <input style={{ ...inputStyle, textTransform: "uppercase" }} value={form.id}
-                onChange={e => setForm(f => ({ ...f, id: e.target.value }))} placeholder="PLTR" disabled={!!editingId} />
-            </div>
-            <div>
-              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>NAME</div>
-              <input style={inputStyle} value={form.label}
-                onChange={e => setForm(f => ({ ...f, label: e.target.value }))} placeholder="Palantir" />
-            </div>
-            <div>
-              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>SHARES *</div>
-              <input style={inputStyle} value={form.shares} type="number" step="any" min="0"
-                onChange={e => setForm(f => ({ ...f, shares: e.target.value }))} placeholder="100" />
-            </div>
-            <div>
-              <div style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace", marginBottom: 4 }}>AVG COST *</div>
-              <input style={inputStyle} value={form.avgCost} type="number" step="any" min="0"
-                onChange={e => setForm(f => ({ ...f, avgCost: e.target.value }))} placeholder="18.42" />
-            </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:8 }}>
+            {[["SYMBOL *","symbol","text","PLTR"],["SHARES *","shares","number","100"],["AVG COST *","avgCost","number","18.42"]].map(([lbl,key,type,ph])=>(
+              <div key={key}>
+                <div style={{ fontSize:9, color:"#555", fontFamily:"'Space Mono',monospace", marginBottom:3 }}>{lbl}</div>
+                <input style={{ ...inputStyle, textTransform:key==="symbol"?"uppercase":"none" }} type={type} step="any" min="0"
+                  value={posForm[key]} onChange={e=>setPosForm(f=>({...f,[key]:e.target.value}))}
+                  placeholder={ph} disabled={key==="symbol"&&!!editingPos} />
+              </div>
+            ))}
           </div>
-          {formError && <div style={{ fontSize: 10, color: "#ff4466", fontFamily: "'Space Mono', monospace", marginBottom: 8 }}>{formError}</div>}
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={submitForm} style={{ background: "rgba(0,170,255,0.15)", border: "1px solid rgba(0,170,255,0.3)", color: "#00aaff", borderRadius: 4, padding: "6px 16px", cursor: "pointer", fontSize: 11, fontFamily: "'Space Mono', monospace" }}>
-              {editingId ? "SAVE" : "ADD"}
-            </button>
-            <button onClick={closeForm} style={{ background: "none", border: "1px solid rgba(255,255,255,0.08)", color: "#555", borderRadius: 4, padding: "6px 12px", cursor: "pointer", fontSize: 11, fontFamily: "'Space Mono', monospace" }}>
-              CANCEL
-            </button>
+          {posError && <div style={{ fontSize:10, color:"#ff4466", fontFamily:"'Space Mono',monospace", marginBottom:8 }}>{posError}</div>}
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={submitPos} style={{ background:"rgba(0,170,255,0.15)", border:"1px solid rgba(0,170,255,0.3)", color:"#00aaff", borderRadius:4, padding:"6px 16px", cursor:"pointer", fontSize:11, fontFamily:"'Space Mono',monospace" }}>{editingPos?"SAVE":"ADD"}</button>
+            <button onClick={closePos}  style={{ background:"none", border:"1px solid rgba(255,255,255,0.08)", color:"#555", borderRadius:4, padding:"6px 12px", cursor:"pointer", fontSize:11, fontFamily:"'Space Mono',monospace" }}>CANCEL</button>
           </div>
         </div>
       )}
 
-      {/* Column headers */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 0.7fr 0.9fr 0.9fr 1fr 0.6fr 0.5fr", gap: 8, padding: "0 10px" }}>
-        {["POSITION", "PRICE", "VALUE", "COST", "P&L", "ALLOC", ""].map((h, i) => (
-          <span key={i} className={i >= 3 && i <= 4 ? "portfolio-col-hide" : ""} style={{ fontSize: 9, color: "#444", letterSpacing: 1, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>{h}</span>
+      {showTrade && (
+        <TradeForm onSubmit={handleLogTrade} onCancel={()=>setShowTrade(false)} assets={assets} auxData={auxData} />
+      )}
+
+      {/* ── Column header + action bar ────────────────────────── */}
+      <div style={{ display:"grid", gridTemplateColumns:"0.9fr 0.7fr 0.85fr 0.85fr 1fr 0.6fr 0.5fr", gap:8, padding:"0 8px" }}>
+        {["POSITION","PRICE","VALUE","COST","P&L","ALLOC",""].map((h,i)=>(
+          <span key={i} className={i>=3&&i<=4?"portfolio-col-hide":""} style={{ fontSize:9, color:"#444", letterSpacing:1, textTransform:"uppercase", fontFamily:"'Space Mono',monospace" }}>{h}</span>
         ))}
-        <div style={{ gridColumn: "7 / 8", display: "flex", justifyContent: "flex-end" }}>
-          {!showForm && (
-            <button onClick={openAdd} style={{ background: "rgba(0,170,255,0.1)", border: "1px solid rgba(0,170,255,0.25)", color: "#00aaff", borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontSize: 10, fontFamily: "'Space Mono', monospace", letterSpacing: 0.5 }}>+ ADD</button>
-          )}
+        <div style={{ display:"flex", gap:6, justifyContent:"flex-end" }}>
+          {!showAddPos && !showTrade && (<>
+            <button onClick={()=>{ setShowTrade(true); setShowAddPos(false); }} style={{ background:"rgba(0,255,136,0.08)", border:"1px solid rgba(0,255,136,0.2)", color:"#00ff88", borderRadius:4, padding:"3px 8px", cursor:"pointer", fontSize:9, fontFamily:"'Space Mono',monospace" }}>+ TRADE</button>
+            <button onClick={openAddPos}                                        style={{ background:"rgba(0,170,255,0.08)", border:"1px solid rgba(0,170,255,0.2)", color:"#00aaff", borderRadius:4, padding:"3px 8px", cursor:"pointer", fontSize:9, fontFamily:"'Space Mono',monospace" }}>+ POS</button>
+          </>)}
         </div>
       </div>
 
-      {/* Position rows */}
+      {/* ── Position rows ─────────────────────────────────────── */}
       {rows.map(row => {
         const hasLive = !row.priceLoading;
-        const isGain  = hasLive ? row.unrealizedPnL >= 0 : true;
+        const isGain  = hasLive ? (row.unrealizedPnL??0) >= 0 : true;
         const c       = hasLive ? pnlColor(row.unrealizedPnL) : "#444";
         return (
-          <div key={row.id} className="portfolio-row" style={{
-            display: "grid", gridTemplateColumns: "1fr 0.7fr 0.9fr 0.9fr 1fr 0.6fr 0.5fr",
-            gap: 8, padding: "10px 10px",
-            background: hasLive ? (isGain ? "rgba(0,255,136,0.02)" : "rgba(255,68,102,0.02)") : "rgba(255,255,255,0.01)",
-            border: `1px solid ${hasLive ? (isGain ? "rgba(0,255,136,0.08)" : "rgba(255,68,102,0.08)") : "rgba(255,255,255,0.05)"}`,
-            borderRadius: 6, alignItems: "center", borderLeft: `3px solid ${c}`,
-            opacity: row.priceLoading ? 0.7 : 1, transition: "opacity 0.4s, border-color 0.4s",
-          }}>
+          <div key={row.symbol} className="portfolio-row" style={{ display:"grid", gridTemplateColumns:"0.9fr 0.7fr 0.85fr 0.85fr 1fr 0.6fr 0.5fr", gap:8, padding:"9px 8px", background:hasLive?(isGain?"rgba(0,255,136,0.02)":"rgba(255,68,102,0.02)"):"rgba(255,255,255,0.01)", border:`1px solid ${hasLive?(isGain?"rgba(0,255,136,0.07)":"rgba(255,68,102,0.07)"):"rgba(255,255,255,0.04)"}`, borderRadius:6, alignItems:"center", borderLeft:`3px solid ${c}`, opacity:row.priceLoading?0.65:1, transition:"opacity 0.4s" }}>
+
+            {/* Symbol + shares */}
             <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{row.id}</div>
-              <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{row.shares} shares</div>
+              <div style={{ fontSize:12, fontWeight:700, color:"#e8e8e8", fontFamily:"'Space Mono',monospace" }}>{row.symbol}</div>
+              <div style={{ fontSize:9, color:"#555", marginTop:1 }}>{row.shares} shares</div>
             </div>
+
+            {/* Price + daily change */}
             <div>
-              <div style={{ fontSize: 12, fontFamily: "'Space Mono', monospace", color: row.priceLoading ? "#555" : row.priceStale ? "#888" : "#ccc" }}>
-                {row.priceLoading ? <span style={{ color: "#444", letterSpacing: 1 }}>—</span> : `$${row.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              <div style={{ fontSize:11, fontFamily:"'Space Mono',monospace", color:row.priceLoading?"#555":row.priceStale?"#888":"#ccc" }}>
+                {row.priceLoading ? <span style={{ color:"#444" }}>—</span> : `$${row.currentPrice.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`}
               </div>
-              <div style={{ display: "flex", gap: 4, marginTop: 2, alignItems: "center" }}>
-                {hasLive && row.priceChange != null && (
-                  <span style={{ fontSize: 9, color: row.priceChange >= 0 ? "#00ff88" : "#ff4466", fontFamily: "'Space Mono', monospace" }}>
-                    {row.priceChange >= 0 ? "+" : ""}{row.priceChange.toFixed(2)}%
+              <div style={{ display:"flex", gap:3, marginTop:2, alignItems:"center" }}>
+                {hasLive && row.priceChange!=null && (
+                  <span style={{ fontSize:8, color:row.priceChange>=0?"#00ff88":"#ff4466", fontFamily:"'Space Mono',monospace" }}>
+                    {row.priceChange>=0?"+":""}{row.priceChange.toFixed(2)}%
                   </span>
                 )}
-                {row.priceLoading && <span style={{ fontSize: 8, color: "#444", fontFamily: "'Space Mono', monospace" }}>loading</span>}
-                {!row.priceLoading && row.priceStale && (
-                  <span style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "rgba(255,215,0,0.1)", color: "#ffd700", fontFamily: "'Space Mono', monospace", border: "1px solid rgba(255,215,0,0.2)" }}>STALE</span>
-                )}
+                {row.priceLoading && <span style={{ fontSize:8, color:"#444", fontFamily:"'Space Mono',monospace" }}>loading</span>}
+                {!row.priceLoading && row.priceStale && <span style={{ fontSize:7, padding:"1px 3px", borderRadius:2, background:"rgba(255,215,0,0.1)", color:"#ffd700", fontFamily:"'Space Mono',monospace", border:"1px solid rgba(255,215,0,0.2)" }}>STALE</span>}
               </div>
-              {debugMode && (
-                <div style={{ fontSize: 8, color: "#00aaff", fontFamily: "'Space Mono', monospace", marginTop: 1 }}>
-                  {row.priceSource}{row.priceTs && ` · ${new Date(row.priceTs).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`}
-                </div>
-              )}
+              {debugMode && <div style={{ fontSize:7, color:"#00aaff", fontFamily:"'Space Mono',monospace", marginTop:1 }}>{row.priceSource}{row.priceTs?` · ${new Date(row.priceTs).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:false})}`:""}</div>}
             </div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: hasLive ? "#e8e8e8" : "#444", fontFamily: "'Space Mono', monospace" }}>
-              {hasLive ? fmt$(row.currentValue) : "—"}
+
+            {/* Current value */}
+            <div style={{ fontSize:11, fontWeight:600, color:hasLive?"#e8e8e8":"#444", fontFamily:"'Space Mono',monospace" }}>
+              {hasLive?fmt$(row.currentValue):"—"}
             </div>
-            <div className="portfolio-col-hide" style={{ fontSize: 12, color: "#666", fontFamily: "'Space Mono', monospace" }}>{fmt$(row.costBasis)}</div>
+
+            {/* Cost basis */}
+            <div className="portfolio-col-hide" style={{ fontSize:11, color:"#666", fontFamily:"'Space Mono',monospace" }}>{fmt$(row.costBasis)}</div>
+
+            {/* P&L */}
             <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: c, fontFamily: "'Space Mono', monospace" }}>
-                {hasLive && row.unrealizedPnL != null ? `${row.unrealizedPnL >= 0 ? "+" : "-"}${fmt$(row.unrealizedPnL)}` : <span style={{ color: "#333" }}>—</span>}
+              <div style={{ fontSize:11, fontWeight:700, color:c, fontFamily:"'Space Mono',monospace" }}>
+                {hasLive && row.unrealizedPnL!=null ? `${row.unrealizedPnL>=0?"+":"-"}${fmt$(row.unrealizedPnL)}` : <span style={{ color:"#333" }}>—</span>}
               </div>
-              <div style={{ fontSize: 10, color: c, opacity: 0.8, fontFamily: "'Space Mono', monospace" }}>
-                {hasLive && row.unrealizedPct != null ? fmtPct(row.unrealizedPct) : ""}
+              <div style={{ fontSize:9, color:c, opacity:0.8, fontFamily:"'Space Mono',monospace" }}>
+                {hasLive && row.unrealizedPct!=null ? fmtPct(row.unrealizedPct) : ""}
               </div>
             </div>
+
+            {/* Allocation bar */}
             <div className="portfolio-col-hide">
-              <div style={{ fontSize: 10, color: "#888", fontFamily: "'Space Mono', monospace", marginBottom: 3 }}>{row.allocation.toFixed(1)}%</div>
-              <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2 }}>
-                <div style={{ height: "100%", width: `${Math.min(row.allocation, 100)}%`, background: c, borderRadius: 2, transition: "width 0.8s ease" }} />
+              <div style={{ fontSize:9, color:"#888", fontFamily:"'Space Mono',monospace", marginBottom:3 }}>{row.allocation.toFixed(1)}%</div>
+              <div style={{ height:3, background:"rgba(255,255,255,0.05)", borderRadius:2 }}>
+                <div style={{ height:"100%", width:`${Math.min(row.allocation,100)}%`, background:c, borderRadius:2, transition:"width 0.8s ease" }} />
               </div>
             </div>
-            <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
-              <button onClick={() => openEdit(positions.find(p => p.id === row.id))} style={{ background: "none", border: "1px solid rgba(255,255,255,0.1)", color: "#666", borderRadius: 3, padding: "2px 6px", cursor: "pointer", fontSize: 10, fontFamily: "'Space Mono', monospace" }} title="Edit">✎</button>
-              <button onClick={() => deletePosition(row.id)} style={{ background: "none", border: "1px solid rgba(255,68,102,0.2)", color: "#ff4466", borderRadius: 3, padding: "2px 6px", cursor: "pointer", fontSize: 10 }} title="Remove">×</button>
+
+            {/* Edit / delete */}
+            <div style={{ display:"flex", gap:4, justifyContent:"flex-end" }}>
+              <button onClick={()=>openEditPos(positions.find(p=>p.symbol===row.symbol))} style={{ background:"none", border:"1px solid rgba(255,255,255,0.08)", color:"#555", borderRadius:3, padding:"2px 5px", cursor:"pointer", fontSize:10, fontFamily:"'Space Mono',monospace" }} title="Edit">✎</button>
+              <button onClick={()=>deletePos(row.symbol)} style={{ background:"none", border:"1px solid rgba(255,68,102,0.15)", color:"#ff4466", borderRadius:3, padding:"2px 5px", cursor:"pointer", fontSize:10 }} title="Remove">×</button>
             </div>
           </div>
         );
       })}
 
       {positions.length === 0 && (
-        <div style={{ textAlign: "center", padding: "32px 0", color: "#444", fontFamily: "'Space Mono', monospace", fontSize: 11 }}>
-          No positions yet. Click + ADD to get started.
+        <div style={{ textAlign:"center", padding:"28px 0", color:"#444", fontFamily:"'Space Mono',monospace", fontSize:11 }}>
+          No positions yet. Click + TRADE to log a buy, or + POS to add manually.
         </div>
       )}
 
-      <div style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace", padding: "2px 4px" }}>
-        BTC/ETH/SPY/QQQ via Dashboard feed · SOFI/PLTR/ZETA via /api/stocks · ARCC/OBDC via /api/stocks · Enable DEBUG for source details
+      {/* ── Trade history ─────────────────────────────────────── */}
+      <TradeHistory trades={trades} onDelete={(tid)=>deleteTrade(activeId,tid)} />
+
+      {/* ── Footer ───────────────────────────────────────────── */}
+      <div style={{ fontSize:9, color:"#2a2a2a", fontFamily:"'Space Mono',monospace", padding:"2px 4px" }}>
+        Prices from Dashboard feed · /api/stocks · Enable DEBUG for source details
+        {syncing ? " · ↻ syncing..." : " · ✓ saved"}
       </div>
     </div>
   );

@@ -3925,31 +3925,86 @@ function analyzeMomentum({ price, ma20, ma50, dailyChange, volumeRatio = 1 }) {
 }
 
 // Stocks to track + their Yahoo tickers
-const MOMENTUM_STOCKS = [
-  { id: "SOFI", label: "SoFi",     desc: "Fintech / neo-bank" },
-  { id: "PLTR", label: "Palantir", desc: "AI data analytics"  },
-  { id: "ZETA", label: "Zeta",     desc: "Marketing AI"       },
-];
+// ─────────────────────────────────────────────
+// WATCHLIST — persistent, user-managed symbol list
+// ─────────────────────────────────────────────
+const WATCHLIST_KEY      = "mm_watchlist_v1";
+const WATCHLIST_DEFAULTS = ["PLTR", "SOFI", "ZETA"];
+const WATCHLIST_MAX      = 20;
 
-// Fetches 3mo daily OHLCV from Yahoo via /api/stocks?history=true, computes MA20/MA50
-const useStockMomentum = () => {
+function loadWatchlist() {
+  try {
+    const raw = localStorage.getItem(WATCHLIST_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return [...WATCHLIST_DEFAULTS];
+}
+
+function saveWatchlist(list) {
+  try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list)); } catch {}
+}
+
+// useWatchlist: exposes the list + add/remove helpers
+function useWatchlist() {
+  const [symbols, setSymbols] = useState(() => loadWatchlist());
+
+  const add = useCallback((raw) => {
+    const sym = raw.trim().toUpperCase().replace(/[^A-Z0-9.]/g, "");
+    if (!sym || sym.length > 8) return "invalid";
+    setSymbols(prev => {
+      if (prev.includes(sym)) return prev;          // already in list
+      if (prev.length >= WATCHLIST_MAX) return prev; // cap at 20
+      const next = [...prev, sym];
+      saveWatchlist(next);
+      return next;
+    });
+    return "ok";
+  }, []);
+
+  const remove = useCallback((sym) => {
+    setSymbols(prev => {
+      const next = prev.filter(s => s !== sym);
+      saveWatchlist(next);
+      return next;
+    });
+  }, []);
+
+  return { symbols, add, remove };
+}
+
+// useStockMomentum: fetches prices + momentum for any symbol list
+// Re-fetches whenever the symbol list changes.
+const useStockMomentum = (symbols) => {
   const [stocks, setStocks]   = useState({});
   const [loading, setLoading] = useState(true);
   const [lastFetch, setLastFetch] = useState(null);
 
+  // Stable key to detect list changes
+  const symbolKey = symbols.join(",");
+
   useEffect(() => {
+    if (symbols.length === 0) { setStocks({}); setLoading(false); return; }
+
+    let cancelled = false;
+
     const fetchAll = async () => {
       try {
-        const symbols = MOMENTUM_STOCKS.map(s => s.id).join(",");
-        const res = await fetch(`/api/stocks?symbols=${symbols}&history=true`, { cache: "no-store" });
+        const res = await fetch(`/api/stocks?symbols=${symbolKey}&history=true`, { cache: "no-store" });
         if (!res.ok) throw new Error(`/api/stocks ${res.status}`);
         const { stocks: raw } = await res.json();
+        if (cancelled) return;
 
         const results = {};
-        MOMENTUM_STOCKS.forEach(({ id }) => {
+        symbols.forEach(id => {
           const d = raw[id];
-          if (!d?.price) { results[id] = null; return; }
-
+          if (!d?.price) {
+            // Mark as not found — show in UI as invalid rather than silently dropping
+            results[id] = { notFound: true };
+            return;
+          }
           const momentum = (d.ma20 && d.ma50)
             ? analyzeMomentum({ price: d.price, ma20: d.ma20, ma50: d.ma50, dailyChange: d.percentChange ?? 0, volumeRatio: d.volumeRatio ?? 1 })
             : null;
@@ -3973,16 +4028,17 @@ const useStockMomentum = () => {
       } catch (e) {
         console.warn("[useStockMomentum]", e.message);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
+    setLoading(true);
     fetchAll();
     const interval = setInterval(fetchAll,
       getMarketStatus().isOpen ? INTERVALS.MOMENTUM_OPEN : INTERVALS.MOMENTUM_CLOSED
     );
-    return () => clearInterval(interval);
-  }, []);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [symbolKey]); // re-run whenever watchlist changes
 
   return { stocks, loading, lastFetch };
 };
@@ -4006,125 +4062,159 @@ const MOMENTUM_COLORS = {
   },
 };
 
-const StockMomentumPanel = memo(({ stocks = {}, loading = true, lastFetch = null }) => {
+const WatchlistPanel = memo(({ symbols, stocks = {}, loading = true, lastFetch = null, onAdd, onRemove }) => {
 
-  const fmt$ = (n) => n != null ? `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—";
+  const [input,    setInput]    = useState("");
+  const [addError, setAddError] = useState("");
+  const [adding,   setAdding]   = useState(false);
+
+  const fmt$   = (n) => n != null ? `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—";
   const fmtPct = (n) => n != null ? `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` : "—";
+
+  const handleAdd = () => {
+    const sym = input.trim().toUpperCase();
+    if (!sym) return;
+    const result = onAdd(sym);
+    if (result === "invalid") {
+      setAddError("Invalid symbol");
+      return;
+    }
+    setInput("");
+    setAddError("");
+  };
+
+  const mono = { fontFamily: "'Space Mono', monospace" };
+  const inp  = { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 4, padding: "5px 8px", color: "#e8e8e8", fontSize: 11, outline: "none", width: 90, ...mono };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
-      {/* Header */}
+      {/* Header row */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>
-          Stock Momentum
+        <span style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase", ...mono }}>
+          Watchlist <span style={{ color: "#333", fontSize: 9 }}>({symbols.length}/{WATCHLIST_MAX})</span>
         </span>
-        <span style={{ fontSize: 9, color: "#333", fontFamily: "'Space Mono', monospace" }}>
-          {loading ? "Loading..." : lastFetch ? `UPD ${lastFetch.toLocaleTimeString("en-US", { hour12: false })}` : ""}
+        <span style={{ fontSize: 9, color: "#333", ...mono }}>
+          {loading ? "loading..." : lastFetch ? `UPD ${lastFetch.toLocaleTimeString("en-US", { hour12: false })}` : ""}
         </span>
       </div>
+
+      {/* Add stock input */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <input
+          style={inp}
+          value={input}
+          onChange={e => { setInput(e.target.value.toUpperCase()); setAddError(""); }}
+          onKeyDown={e => { if (e.key === "Enter") handleAdd(); if (e.key === "Escape") { setInput(""); setAddError(""); } }}
+          placeholder="TICKER"
+          maxLength={8}
+          spellCheck={false}
+        />
+        <button onClick={handleAdd} style={{ background: "rgba(0,170,255,0.1)", border: "1px solid rgba(0,170,255,0.25)", color: "#00aaff", borderRadius: 4, padding: "5px 10px", cursor: "pointer", fontSize: 10, ...mono }}>
+          + ADD
+        </button>
+        {addError && <span style={{ fontSize: 9, color: "#ff4466", ...mono }}>{addError}</span>}
+      </div>
+
+      {/* Empty state */}
+      {symbols.length === 0 && (
+        <div style={{ fontSize: 11, color: "#444", ...mono, padding: "12px 0" }}>
+          Watchlist is empty. Type a ticker above to get started.
+        </div>
+      )}
 
       {/* Column headers */}
-      <div style={{
-        display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr",
-        gap: 8, padding: "0 10px", borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 6,
-      }}>
-        {["Stock", "Price", "Chg", "Trend", "Strength", "Signal"].map(h => (
-          <span key={h} style={{ fontSize: 9, color: "#444", letterSpacing: 1, textTransform: "uppercase", fontFamily: "'Space Mono', monospace" }}>{h}</span>
-        ))}
-      </div>
+      {symbols.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 0.8fr 0.7fr 0.7fr 0.7fr 0.7fr 0.3fr", gap: 6, padding: "0 8px 6px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+          {["Symbol", "Price", "Chg", "Trend", "Strength", "Signal", ""].map((h, i) => (
+            <span key={i} style={{ fontSize: 9, color: "#444", letterSpacing: 1, textTransform: "uppercase", ...mono }}>{h}</span>
+          ))}
+        </div>
+      )}
 
       {/* Stock rows */}
-      {MOMENTUM_STOCKS.map(({ id, label, desc }) => {
+      {symbols.map(id => {
         const d = stocks[id];
-        const m = d?.momentum;
-        const isClosed = d?.marketState === "CLOSED";
-        const trendColor  = m ? MOMENTUM_COLORS.trend[m.trend]    : "#444";
-        const sigColor    = m ? MOMENTUM_COLORS.signal[m.signal]  : "#444";
-        const chgColor    = d?.change >= 0 ? "#00ff88" : "#ff4466";
+        const isLoading  = loading && !d;
+        const isNotFound = d?.notFound;
+        const m          = d?.momentum;
+        const isClosed   = d?.marketState === "CLOSED";
+        const trendColor = m ? MOMENTUM_COLORS.trend[m.trend]   : "#333";
+        const sigColor   = m ? MOMENTUM_COLORS.signal[m.signal] : "#333";
+        const chgColor   = !d || isNotFound ? "#444" : (d.change >= 0 ? "#00ff88" : "#ff4466");
 
         return (
           <div key={id} style={{
-            display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr",
-            gap: 8, padding: "10px 10px",
-            background: !m ? "rgba(255,255,255,0.01)"
+            display: "grid", gridTemplateColumns: "1fr 0.8fr 0.7fr 0.7fr 0.7fr 0.7fr 0.3fr",
+            gap: 6, padding: "9px 8px",
+            background: isNotFound ? "rgba(255,68,102,0.02)"
+              : !m ? "rgba(255,255,255,0.01)"
               : m.trend === "UP"   ? "rgba(0,255,136,0.02)"
               : m.trend === "DOWN" ? "rgba(255,68,102,0.02)"
               : "rgba(255,215,0,0.02)",
-            border: `1px solid ${!m ? "rgba(255,255,255,0.05)" : m.trend === "UP" ? "rgba(0,255,136,0.08)" : m.trend === "DOWN" ? "rgba(255,68,102,0.08)" : "rgba(255,215,0,0.06)"}`,
+            border: `1px solid ${isNotFound ? "rgba(255,68,102,0.12)" : !m ? "rgba(255,255,255,0.05)" : m.trend === "UP" ? "rgba(0,255,136,0.08)" : m.trend === "DOWN" ? "rgba(255,68,102,0.08)" : "rgba(255,215,0,0.06)"}`,
             borderRadius: 6, alignItems: "center",
-            borderLeft: `3px solid ${trendColor}`,
-            opacity: loading ? 0.5 : 1,
+            borderLeft: `3px solid ${isNotFound ? "#ff4466" : trendColor}`,
+            opacity: isLoading ? 0.4 : 1,
             transition: "opacity 0.3s",
           }}>
-            {/* Stock name */}
+
+            {/* Symbol */}
             <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace" }}>{label}</div>
-              <div style={{ fontSize: 9, color: "#444", marginTop: 1 }}>{desc}</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: isNotFound ? "#ff4466" : "#e8e8e8", ...mono }}>{id}</div>
+              {isNotFound && <div style={{ fontSize: 8, color: "#ff4466", marginTop: 1, ...mono }}>not found</div>}
+              {d?.source && !isNotFound && <div style={{ fontSize: 8, color: "#333", marginTop: 1, ...mono }}>{d.source}</div>}
             </div>
 
             {/* Price */}
-            <div style={{ fontSize: 11, color: isClosed ? "#666" : "#ccc", fontFamily: "'Space Mono', monospace" }}>
-              {loading ? "..." : fmt$(d?.price)}
+            <div style={{ fontSize: 11, color: isClosed ? "#666" : "#ccc", ...mono }}>
+              {isLoading ? "..." : isNotFound ? "—" : fmt$(d?.price)}
             </div>
 
-            {/* Daily change */}
-            <div style={{ fontSize: 11, fontWeight: 700, color: loading || !d ? "#444" : chgColor, fontFamily: "'Space Mono', monospace" }}>
-              {loading ? "..." : fmtPct(d?.change)}
+            {/* Change */}
+            <div style={{ fontSize: 11, fontWeight: 700, color: chgColor, ...mono }}>
+              {isLoading ? "..." : isNotFound ? "—" : fmtPct(d?.change)}
             </div>
 
             {/* Trend */}
             <div>
               {m ? (
-                <span style={{
-                  fontSize: 10, fontWeight: 700, color: trendColor,
-                  fontFamily: "'Space Mono', monospace",
-                }}>
-                  {m.trend === "UP" ? "▲ UP" : m.trend === "DOWN" ? "▼ DOWN" : "— SIDE"}
+                <span style={{ fontSize: 10, fontWeight: 700, color: trendColor, ...mono }}>
+                  {m.trend === "UP" ? "▲ UP" : m.trend === "DOWN" ? "▼ DN" : "— SD"}
                 </span>
-              ) : (
-                <span style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace" }}>—</span>
-              )}
+              ) : <span style={{ fontSize: 10, color: "#2a2a2a", ...mono }}>—</span>}
             </div>
 
             {/* Strength */}
             <div>
               {m ? (
-                <span style={{
-                  fontSize: 9, padding: "2px 5px", borderRadius: 2,
-                  background: `${trendColor}18`, color: trendColor,
-                  fontFamily: "'Space Mono', monospace",
-                  border: `1px solid ${trendColor}33`,
-                }}>{m.strength}</span>
-              ) : (
-                <span style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace" }}>—</span>
-              )}
+                <span style={{ fontSize: 9, padding: "2px 5px", borderRadius: 2, background: `${trendColor}18`, color: trendColor, border: `1px solid ${trendColor}33`, ...mono }}>
+                  {m.strength}
+                </span>
+              ) : <span style={{ fontSize: 10, color: "#2a2a2a", ...mono }}>—</span>}
             </div>
 
             {/* Signal */}
             <div>
               {m ? (
-                <span style={{
-                  fontSize: 9, padding: "2px 5px", borderRadius: 2,
-                  background: m.signal === "BREAKOUT" ? "rgba(0,255,136,0.12)" : "rgba(255,255,255,0.04)",
-                  color: sigColor,
-                  fontFamily: "'Space Mono', monospace",
-                  border: `1px solid ${sigColor}44`,
-                  fontWeight: m.signal === "BREAKOUT" ? 700 : 400,
-                }}>{m.signal}</span>
-              ) : (
-                <span style={{ fontSize: 10, color: "#333", fontFamily: "'Space Mono', monospace" }}>—</span>
-              )}
+                <span style={{ fontSize: 9, padding: "2px 5px", borderRadius: 2, background: m.signal === "BREAKOUT" ? "rgba(0,255,136,0.12)" : "rgba(255,255,255,0.04)", color: sigColor, border: `1px solid ${sigColor}44`, fontWeight: m.signal === "BREAKOUT" ? 700 : 400, ...mono }}>
+                  {m.signal}
+                </span>
+              ) : <span style={{ fontSize: 10, color: "#2a2a2a", ...mono }}>—</span>}
+            </div>
+
+            {/* Remove button */}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button onClick={() => onRemove(id)} title={`Remove ${id}`} style={{ background: "none", border: "1px solid rgba(255,68,102,0.15)", color: "#ff4466", borderRadius: 3, padding: "2px 5px", cursor: "pointer", fontSize: 10, lineHeight: 1, ...mono }}>×</button>
             </div>
           </div>
         );
       })}
 
-      {/* MA reference */}
-      <div style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "'Space Mono', monospace", padding: "2px 4px" }}>
+      {/* Footer */}
+      <div style={{ fontSize: 9, color: "#2a2a2a", ...mono, padding: "2px 4px" }}>
         MA20 / MA50 computed from 3mo daily closes · Refreshes every 5 min
       </div>
-
     </div>
   );
 });
@@ -4631,7 +4721,8 @@ export default function MarketMonitor() {
   // Momentum stocks + BDC prices now come from the central assets array (fetched server-side)
   // useBDCPrices and useStockMomentum hooks are retained only for the Stocks tab MA20/MA50 calculations
   // which require 3mo OHLCV — not just current price. Portfolio and BDC panel use assets directly.
-  const { stocks: momentumStocks, loading: momentumLoading, lastFetch: momentumLastFetch } = useStockMomentum();
+  const { symbols: watchlistSymbols, add: watchlistAdd, remove: watchlistRemove } = useWatchlist();
+  const { stocks: momentumStocks, loading: momentumLoading, lastFetch: momentumLastFetch } = useStockMomentum(watchlistSymbols);
   const { prices: bdcPrices, loading: bdcLoading } = useBDCPrices();
 
   // Build auxData for portfolio from BOTH assets array AND hook fallbacks
@@ -5153,12 +5244,15 @@ export default function MarketMonitor() {
             <PrivateCreditPanel bdcPrices={bdcPrices} bdcLoading={bdcLoading} />
           )}
 
-          {/* STOCKS TAB */}
+          {/* STOCKS / WATCHLIST TAB */}
           {centerTab === "stocks" && (
-            <StockMomentumPanel
+            <WatchlistPanel
+              symbols={watchlistSymbols}
               stocks={momentumStocks}
               loading={momentumLoading}
               lastFetch={momentumLastFetch}
+              onAdd={watchlistAdd}
+              onRemove={watchlistRemove}
             />
           )}
 

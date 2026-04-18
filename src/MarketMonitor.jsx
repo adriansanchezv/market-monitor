@@ -665,7 +665,50 @@ async function fetchKlinesForTimeframe(tf) {
   return { BTC: btc, ETH: eth };
 }
 
-const useMarketData = (isPaused = false) => {
+// ─────────────────────────────────────────────────────────────────
+// EQUITY SPARKLINES
+// Fetches real historical closes for SPY/QQQ/VIX/WTI/GOLD/DXY/TNX
+// via /api/prices?sparklines=true (Yahoo 15m candles, 1d range).
+// Called once on init — same pattern as fetchCryptoKlines.
+// ─────────────────────────────────────────────────────────────────
+const EQUITY_SPARKLINES_KEY = "mm_equity_sparklines_v1";
+const EQUITY_SPARKLINES_TTL = 10 * 60 * 1000;  // 10min cache
+
+function loadEquitySparklines() {
+  try {
+    const raw = localStorage.getItem(EQUITY_SPARKLINES_KEY);
+    if (!raw) return null;
+    const { data, fetchedAt } = JSON.parse(raw);
+    if (Date.now() - fetchedAt > EQUITY_SPARKLINES_TTL) return null;
+    return data;
+  } catch { return null; }
+}
+
+function saveEquitySparklines(data) {
+  try {
+    localStorage.setItem(EQUITY_SPARKLINES_KEY, JSON.stringify({ data, fetchedAt: Date.now() }));
+  } catch {}
+}
+
+async function fetchEquitySparklines() {
+  // Try cache first
+  const cached = loadEquitySparklines();
+  if (cached && Object.keys(cached).length > 0) {
+    console.log("[equity sparklines] cache hit");
+    return cached;
+  }
+  try {
+    const res = await fetch("/api/prices?sparklines=true", { cache: "no-store" });
+    if (!res.ok) throw new Error(`/api/prices?sparklines ${res.status}`);
+    const json = await res.json();
+    const data = json.sparklines ?? {};
+    if (Object.keys(data).length > 0) saveEquitySparklines(data);
+    return data;
+  } catch (e) {
+    console.warn("[equity sparklines] fetch failed:", e.message);
+    return {};
+  }
+}
   // Seed from localStorage cache so crypto shows real values + sparklines instantly on reload
   const [assets, setAssets] = useState(() => {
     const saved = loadBaselines();
@@ -824,9 +867,22 @@ const useMarketData = (isPaused = false) => {
           return prev.find(p => p.id === asset.id) ?? asset;
         }
         const existing = prev.find(p => p.id === asset.id);
-        const newSparkline = existing
-          ? [...existing.sparkline.slice(1), { v: asset.price, t: Date.now() }]
-          : generateSparkline(asset.price, asset.vol);
+        // For equity/macro assets: only shift sparkline when price actually changes
+        // (avoids appending identical prices when market is closed)
+        const isCrypto = asset.category === "crypto";
+        let newSparkline;
+        if (existing?.sparkline?.length > 0) {
+          const lastV = existing.sparkline.at(-1)?.v;
+          const priceChanged = asset.price !== lastV;
+          if (priceChanged || !existing.sparkline.length) {
+            newSparkline = [...existing.sparkline.slice(1), { v: asset.price, t: Date.now() }];
+          } else {
+            // Same price — update last point timestamp but don't shift
+            newSparkline = [...existing.sparkline.slice(0, -1), { v: asset.price, t: Date.now() }];
+          }
+        } else {
+          newSparkline = generateSparkline(asset.price, asset.vol);
+        }
         return { ...asset, sparkline: newSparkline, loading: false,
           flash: existing ? (asset.price > existing.price ? "up" : asset.price < existing.price ? "down" : null) : null };
       }));
@@ -838,10 +894,7 @@ const useMarketData = (isPaused = false) => {
   }, [isPaused]);
 
   useEffect(() => {
-    // Step 1: fetch baselines + klines in parallel from Binance — fast, CORS-open.
-    // Baselines give us accurate prices and % change.
-    // Klines give us 24 real hourly candle closes for the sparkline.
-    // Both save to localStorage so next reload is instant with no flicker.
+    // Step 1a: fetch crypto baselines + klines from Binance (CORS-open, fast)
     Promise.all([
       fetchCryptoBaselines(),
       fetchCryptoKlines("BTCUSDT", TIMEFRAMES[DEFAULT_TIMEFRAME].interval, TIMEFRAMES[DEFAULT_TIMEFRAME].limit),
@@ -859,13 +912,9 @@ const useMarketData = (isPaused = false) => {
         const b = baselines[asset.id];
         if (!b) return asset;
 
-        // Use real candle closes if available, otherwise fall back to generated sparkline.
-        // Ensure last point reflects current live price (klines close ~1min ago).
         let sparkline;
         if (b.klines?.length >= 2) {
-          sparkline = b.klines.map(k => ({ ...k }));  // copy to avoid mutation
-          // Replace the last candle's close with the live price so the
-          // sparkline tail connects to the current price card value.
+          sparkline = b.klines.map(k => ({ ...k }));
           sparkline[sparkline.length - 1] = { v: b.price, t: Date.now() };
         } else {
           sparkline = generateSparkline(b.openPrice, asset.vol);
@@ -885,13 +934,26 @@ const useMarketData = (isPaused = false) => {
         };
       }));
 
-      // Prime _priceCache with klines so WS knows the real sparkline history
       Object.entries(baselines).forEach(([id, b]) => { _priceCache[id] = b; });
 
-      // Seed klinesCache so the timeframe effect doesn't refetch what we just loaded
       if (btcKlines || ethKlines) {
         klinesCache.current[DEFAULT_TIMEFRAME] = { BTC: btcKlines, ETH: ethKlines };
       }
+    });
+
+    // Step 1b: fetch real sparklines for equity/macro assets via /api/prices?sparklines=true
+    // Runs in parallel — does NOT block crypto init or polling.
+    fetchEquitySparklines().then(sparklines => {
+      if (!sparklines || Object.keys(sparklines).length === 0) return;
+      setAssets(prev => prev.map(asset => {
+        const candles = sparklines[asset.id];
+        if (!candles || candles.length < 3) return asset;
+        // Ensure last candle is current live price to connect sparkline tail to price card
+        const sparkline = candles.map(c => ({ v: c.v, t: c.t }));
+        if (asset.price > 0) sparkline[sparkline.length - 1] = { v: asset.price, t: Date.now() };
+        console.log(`[equity sparkline] ${asset.id}: ${sparkline.length} real candles`);
+        return { ...asset, sparkline };
+      }));
     });
 
     // Step 2: WS + adaptive polling start

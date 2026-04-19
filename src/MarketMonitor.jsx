@@ -4986,175 +4986,182 @@ export default function MarketMonitor() {
       {/* TOP BAR */}
       <header style={{
         height: 52, display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 20px",
+        padding: "0 16px",
         borderBottom: "1px solid rgba(255,255,255,0.07)",
-        background: "rgba(10,10,15,0.95)", backdropFilter: "blur(10px)",
+        background: "rgba(10,10,15,0.97)", backdropFilter: "blur(10px)",
         position: "sticky", top: 0, zIndex: 100, flexShrink: 0,
+        gap: 12,
       }}>
-        {/* Logo */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+
+        {/* ── LEFT: Logo ─────────────────────────────────────── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <div style={{
-            width: 28, height: 28, background: "linear-gradient(135deg, #00ff88, #00aaff)",
-            borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center",
+            width: 26, height: 26, background: "linear-gradient(135deg, #00ff88, #00aaff)",
+            borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
           }}>
-            <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#0a0a0f" }} />
+            <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#0a0a0f" }} />
           </div>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: 2, color: "#f0f0f0", fontFamily: "'Space Mono', monospace" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 2, color: "#f0f0f0", fontFamily: "'Space Mono', monospace", whiteSpace: "nowrap" }}>
               THE MARKET MONITOR
             </div>
-            <div className="topbar-logo-subtitle" style={{ fontSize: 9, color: "#666", letterSpacing: 1 }}>FINANCIAL INTELLIGENCE TERMINAL</div>
+            <div className="topbar-logo-subtitle" style={{ fontSize: 8, color: "#444", letterSpacing: 1, fontFamily: "'Space Mono', monospace" }}>FINANCIAL INTELLIGENCE TERMINAL</div>
           </div>
         </div>
 
-        {/* Center — ticker */}
-        <div className="topbar-ticker" style={{ display: "flex", gap: 20, alignItems: "center", overflow: "hidden" }}>
+        {/* ── CENTER: Ticker strip ────────────────────────────── */}
+        <div className="topbar-ticker" style={{ display: "flex", gap: 18, alignItems: "center", overflow: "hidden", flex: 1, justifyContent: "center" }}>
           {assets.slice(0, 5).map(a => (
-            <div key={a.id} style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}>
-              <span style={{ fontSize: 10, color: "#666", fontFamily: "'Space Mono', monospace" }}>{a.id}</span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "#d4d4d4", fontFamily: "'Space Mono', monospace" }}>{fmtPrice(a.price, a.unit)}</span>
+            <div key={a.id} style={{ display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap" }}>
+              <span style={{ fontSize: 9, color: "#555", fontFamily: "'Space Mono', monospace" }}>{a.id}</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#c8c8c8", fontFamily: "'Space Mono', monospace" }}>{fmtPrice(a.price, a.unit)}</span>
               <span style={{ fontSize: 10, color: sentimentColor(a.change), fontFamily: "'Space Mono', monospace" }}>{fmtChange(a.change)}</span>
             </div>
           ))}
         </div>
 
-        {/* Right */}
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        {/* ── RIGHT: Controls + Status ────────────────────────── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+
+          {/* ── CONTROLS GROUP ── */}
+          {/* Risk Mode toggle */}
           <button
             className="topbar-risk"
             onClick={() => setRiskMode(m => m === "on" ? "off" : "on")}
+            title={riskMode === "on" ? "Risk mode ON — click to toggle off" : "Risk mode OFF — click to toggle on"}
             style={{
-              background: riskMode === "on" ? "rgba(0,255,136,0.15)" : "rgba(255,68,102,0.15)",
-              border: `1px solid ${riskMode === "on" ? "rgba(0,255,136,0.4)" : "rgba(255,68,102,0.4)"}`,
+              background: riskMode === "on" ? "rgba(0,255,136,0.12)" : "rgba(255,68,102,0.1)",
+              border: `1px solid ${riskMode === "on" ? "rgba(0,255,136,0.35)" : "rgba(255,68,102,0.3)"}`,
               color: riskMode === "on" ? "#00ff88" : "#ff4466",
-              padding: "4px 12px", borderRadius: 4, cursor: "pointer",
-              fontSize: 10, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
+              padding: "5px 10px", borderRadius: 4, cursor: "pointer",
+              fontSize: 10, fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+              whiteSpace: "nowrap",
             }}>
-            RISK {riskMode.toUpperCase()}
+            RISK {riskMode === "on" ? "ON" : "OFF"}
           </button>
-          {/* LOG TRADE — captures full market snapshot to journal */}
+
+          {/* Log Trade */}
           <button
             onClick={() => {
               const snap    = captureSnapshot({ assets, regime: currentRegime, lagSignals });
               const updated = addJournalEntry(snap);
               setJournal(updated);
-              setCenterTab("journal");   // jump to journal tab after logging
+              setCenterTab("journal");
             }}
-            title="Log current market conditions as a trade snapshot"
+            title="Log current market snapshot to journal"
             style={{
-              background: "rgba(255,215,0,0.1)", border: "1px solid rgba(255,215,0,0.3)",
-              color: "#ffd700", padding: "4px 10px", borderRadius: 4, cursor: "pointer",
-              fontSize: 9, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
+              background: "rgba(255,215,0,0.08)", border: "1px solid rgba(255,215,0,0.25)",
+              color: "#ffd700", padding: "5px 10px", borderRadius: 4, cursor: "pointer",
+              fontSize: 10, fontFamily: "'Space Mono', monospace", letterSpacing: 0.5,
+              whiteSpace: "nowrap",
             }}>
             LOG TRADE
           </button>
+
+          {/* Pause */}
           <button
             onClick={() => setIsPaused(p => !p)}
             title={isPaused ? "Resume live data" : "Pause live data"}
             style={{
-              background: isPaused ? "rgba(255,215,0,0.15)" : "rgba(255,255,255,0.03)",
-              border: `1px solid ${isPaused ? "rgba(255,215,0,0.4)" : "rgba(255,255,255,0.12)"}`,
-              color: isPaused ? "#ffd700" : "#555",
-              padding: "4px 10px", borderRadius: 4, cursor: "pointer",
-              fontSize: 12, lineHeight: 1,
+              background: isPaused ? "rgba(255,215,0,0.12)" : "rgba(255,255,255,0.04)",
+              border: `1px solid ${isPaused ? "rgba(255,215,0,0.35)" : "rgba(255,255,255,0.1)"}`,
+              color: isPaused ? "#ffd700" : "#666",
+              padding: "5px 8px", borderRadius: 4, cursor: "pointer",
+              fontSize: 13, lineHeight: 1,
             }}>
             {isPaused ? "▶" : "⏸"}
           </button>
+
+          {/* Debug — hidden on mobile via CSS */}
           <button
             className="topbar-debug"
             onClick={() => setDebugMode(d => !d)}
             title="Toggle debug mode"
             style={{
-              background: debugMode ? "rgba(0,170,255,0.15)" : "rgba(255,255,255,0.03)",
-              border: `1px solid ${debugMode ? "rgba(0,170,255,0.4)" : "rgba(255,255,255,0.12)"}`,
-              color: debugMode ? "#00aaff" : "#555",
-              padding: "4px 10px", borderRadius: 4, cursor: "pointer",
+              background: debugMode ? "rgba(0,170,255,0.12)" : "rgba(255,255,255,0.03)",
+              border: `1px solid ${debugMode ? "rgba(0,170,255,0.35)" : "rgba(255,255,255,0.08)"}`,
+              color: debugMode ? "#00aaff" : "#444",
+              padding: "5px 8px", borderRadius: 4, cursor: "pointer",
               fontSize: 9, fontFamily: "'Space Mono', monospace", letterSpacing: 1,
             }}>
             DEBUG
           </button>
+
+          {/* Sidebar toggle */}
           <button
             onClick={() => setShowSidebar(s => !s)}
             title="Toggle news/social panel"
             style={{
               background: showSidebar ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(255,255,255,0.12)",
-              color: showSidebar ? "#e8e8e8" : "#555",
-              padding: "4px 10px", borderRadius: 4, cursor: "pointer",
-              fontSize: 13, lineHeight: 1, letterSpacing: 0,
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: showSidebar ? "#c8c8c8" : "#444",
+              padding: "5px 8px", borderRadius: 4, cursor: "pointer",
+              fontSize: 13, lineHeight: 1,
             }}>
             {showSidebar ? "▶" : "◀"}
           </button>
-          {/* STATUS STACK — right-aligned terminal style */}
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5, minWidth: 110 }}>
+
+          {/* ── DIVIDER ── */}
+          <div style={{ width: 1, height: 28, background: "rgba(255,255,255,0.08)", flexShrink: 0 }} />
+
+          {/* ── STATUS GROUP ── */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, minWidth: 100 }}>
 
             {/* Clock */}
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#e0e0e0", fontFamily: "'Space Mono', monospace", letterSpacing: 1, lineHeight: 1 }}>
               {time.toLocaleTimeString("en-US", { hour12: false })}
             </div>
 
-            {/* Divider */}
-            <div style={{ width: "100%", height: 1, background: "rgba(255,255,255,0.06)" }} />
+            {/* Market + System status on one line */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
 
-            {/* Market Status */}
-            {(() => {
-              const open   = isMarketOpen();
-              const color  = error ? "#ffd700" : open ? "#00ff88" : "#ff4466";
-              const label  = error ? "API ERR" : open ? "MARKET OPEN" : "MARKET CLOSED";
-              return (
-                <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end" }}>
-                  <span style={{ fontSize: 9, color, fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>{label}</span>
-                  <div style={{
-                    width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
-                    background: color,
-                    boxShadow: open && !error ? `0 0 6px ${color}` : "none",
-                    animation: open && !error ? "pulse 2s infinite" : "none",
-                  }} />
-                </div>
-              );
-            })()}
+              {/* Market status */}
+              {(() => {
+                const open  = isMarketOpen();
+                const color = error ? "#ffd700" : open ? "#00ff88" : "#ff4466";
+                const label = error ? "API ERR" : open ? "OPEN" : "CLOSED";
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div style={{
+                      width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
+                      background: color,
+                      boxShadow: open && !error ? `0 0 5px ${color}` : "none",
+                      animation: open && !error ? "pulse 2s infinite" : "none",
+                    }} />
+                    <span style={{ fontSize: 9, color, fontFamily: "'Space Mono', monospace", letterSpacing: 0.5, whiteSpace: "nowrap" }}>
+                      MARKET {label}
+                    </span>
+                  </div>
+                );
+              })()}
 
-            {/* System Status — single line, priority: OFFLINE > DEGRADED > LIVE */}
-            {(() => {
-              const raw    = systemStatus?.status ?? "LIVE";
-              // isPaused overrides to show PAUSED instead of system status
-              const s      = isPaused ? "PAUSED" : raw;
-              const color  = s === "PAUSED"   ? "#ffd700"
-                           : s === "LIVE"     ? "#00ff88"
-                           : s === "DEGRADED" ? "#ffd700"
-                           :                   "#ff4466";
-              // WS dot: green=active, gray=localhost polling, yellow=off
-              const wsColor = wsConnected ? "#00ff88" : IS_LOCALHOST ? "#444" : "#ffd700";
-              const wsTitle = wsConnected ? "WebSocket active" : IS_LOCALHOST ? "Polling mode" : "WebSocket off";
-              return (
-                <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end" }}>
-                  <span style={{ fontSize: 9, color, fontFamily: "'Space Mono', monospace", letterSpacing: 1 }}>
-                    {s === "PAUSED"   ? "PAUSED"
-                   : s === "LIVE"    ? "LIVE"
-                   : s === "DEGRADED"? "DEGRADED"
-                   :                  "OFFLINE"}
-                  </span>
-                  {/* WS dot replaces "WS LIVE" text */}
-                  <div
-                    title={wsTitle}
-                    style={{
+              {/* Dot separator */}
+              <span style={{ fontSize: 9, color: "#333" }}>·</span>
+
+              {/* System / WS status */}
+              {(() => {
+                const raw     = systemStatus?.status ?? "LIVE";
+                const s       = isPaused ? "PAUSED" : raw;
+                const color   = s === "PAUSED"   ? "#ffd700"
+                              : s === "LIVE"     ? "#00ff88"
+                              : s === "DEGRADED" ? "#ffd700"
+                              :                   "#ff4466";
+                const wsColor = wsConnected ? "#00ff88" : IS_LOCALHOST ? "#444" : "#ffd700";
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div title={wsConnected ? "WebSocket active" : "WebSocket off"} style={{
                       width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
                       background: wsColor,
                       boxShadow: wsConnected ? "0 0 5px #00ff88" : "none",
                       animation: wsConnected ? "pulse 2s infinite" : "none",
-                    }}
-                  />
-                </div>
-              );
-            })()}
-
-            {/* Last updated — subtle, only when available */}
-            {lastUpdated && (
-              <div style={{ fontSize: 8, color: "#333", fontFamily: "'Space Mono', monospace" }}>
-                {lastUpdated.toLocaleTimeString("en-US", { hour12: false })}
-              </div>
-            )}
-
+                    }} />
+                    <span style={{ fontSize: 9, color, fontFamily: "'Space Mono', monospace", letterSpacing: 0.5, whiteSpace: "nowrap" }}>
+                      {s}
+                    </span>
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         </div>
       </header>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
-import { LineChart, Line, ResponsiveContainer, Tooltip, AreaChart, Area } from "recharts";
+import { LineChart, Line, ResponsiveContainer, Tooltip, AreaChart, Area, YAxis } from "recharts";
 
 // ─────────────────────────────────────────────
 // CONFIG
@@ -1408,6 +1408,15 @@ const highlightText = (text, keywords) => {
 
 const Sparkline = ({ data, change }) => {
   const color = change >= 0 ? "#00ff88" : "#ff4466";
+
+  // Compute tight Y domain from actual data so small % moves are visible.
+  // Pad 20% of the range on each side so the line doesn't hug the edges.
+  const values = data.map(d => d.v).filter(v => v != null && v > 0);
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 1;
+  const pad = (max - min) * 0.2 || max * 0.001;  // fallback when range=0
+  const domain = [min - pad, max + pad];
+
   return (
     <ResponsiveContainer width="100%" height={36}>
       <AreaChart data={data} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
@@ -1417,7 +1426,8 @@ const Sparkline = ({ data, change }) => {
             <stop offset="95%" stopColor={color} stopOpacity={0} />
           </linearGradient>
         </defs>
-        <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.5} fill={`url(#g${change >= 0 ? "up" : "dn"})`} dot={false} />
+        <YAxis domain={domain} hide />
+        <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.5} fill={`url(#g${change >= 0 ? "up" : "dn"})`} dot={false} connectNulls />
       </AreaChart>
     </ResponsiveContainer>
   );
@@ -5447,15 +5457,21 @@ export default function MarketMonitor() {
                 <Tooltip
                   contentStyle={{ background: "#13131a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, fontSize: 11 }}
                   labelStyle={{ color: "#888" }}
+                  formatter={(v, name) => [`${parseFloat(v) >= 0 ? "+" : ""}${parseFloat(v).toFixed(2)}%`, name]}
                 />
-                {["BTC", "SPY", "VIX"].map((id, idx) => {
+                <YAxis hide domain={['auto', 'auto']} />
+                {["BTC", "SPY", "VIX"].map((id) => {
                   const asset = assets.find(a => a.id === id);
                   const color = id === "BTC" ? "#f7931a" : id === "SPY" ? "#00aaff" : "#ff4466";
-                  if (!asset) return null;
-                  const normalized = asset.sparkline.map(p => ({
-                    ...p,
-                    [id]: ((p.v - asset.sparkline[0].v) / asset.sparkline[0].v * 100).toFixed(3)
-                  }));
+                  if (!asset?.sparkline?.length) return null;
+                  const base = asset.sparkline.find(p => p.v > 0)?.v;
+                  if (!base) return null;
+                  const normalized = asset.sparkline
+                    .filter(p => p.v > 0)
+                    .map(p => ({
+                      t: p.t,
+                      [id]: parseFloat(((p.v - base) / base * 100).toFixed(3))
+                    }));
                   return (
                     <Line key={id} data={normalized} type="monotone" dataKey={id}
                       stroke={color} strokeWidth={1.5} dot={false} connectNulls />

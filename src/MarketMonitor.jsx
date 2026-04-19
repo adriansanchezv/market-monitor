@@ -709,6 +709,8 @@ async function fetchEquitySparklines() {
     return {};
   }
 }
+
+const useMarketData = (isPaused = false) => {
   // Seed from localStorage cache so crypto shows real values + sparklines instantly on reload
   const [assets, setAssets] = useState(() => {
     const saved = loadBaselines();

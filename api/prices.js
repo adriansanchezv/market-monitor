@@ -410,9 +410,9 @@ async function fetchFromBinance(symbol) {
 
 // ─────────────────────────────────────────────────────────────────
 // SPARKLINES — fetch real historical closes for equity/macro assets
-// Called once on page init via ?sparklines=true
+// Called via ?sparklines=true&tf=1H|4H|24H
 // Returns { SPY: [{v, t}, ...], QQQ: [...], ... }
-// Uses Yahoo Chart API (1d range, 30m interval) — works server-side.
+// Uses Yahoo Chart API — works server-side (no CORS issues).
 // ─────────────────────────────────────────────────────────────────
 
 // Maps our asset IDs to Yahoo symbols for sparkline fetching
@@ -420,31 +420,38 @@ const SPARKLINE_SYMBOLS = {
   SPY:  "SPY",
   QQQ:  "QQQ",
   VIX:  "%5EVIX",
-  WTI:  "CL%3DF",    // CL=F
-  GOLD: "GC%3DF",    // GC=F
+  WTI:  "CL%3DF",
+  GOLD: "GC%3DF",
   DXY:  "DX-Y.NYB",
-  TNX:  "%5ETNX",    // ^TNX
+  TNX:  "%5ETNX",
 };
 
-// Server-side sparkline TTL — 5 min during session, 30 min closed
-const _sparklinesCache = {};
-let   _sparklinesFetchedAt = 0;
+// Timeframe → Yahoo interval + range
+const SPARKLINE_TIMEFRAMES = {
+  "1H":  { interval: "5m",  range: "1d"  },  // 5-min candles, today  (~12 points during session)
+  "4H":  { interval: "15m", range: "1d"  },  // 15-min candles, today (~16 points)
+  "24H": { interval: "1h",  range: "2d"  },  // 1-hour candles, 2 days (~26 points)
+};
 
-async function fetchEquitySparklines() {
-  const cacheAge = Date.now() - _sparklinesFetchedAt;
-  const TTL      = isMarketOpen() ? 5 * 60_000 : 30 * 60_000;
-  if (cacheAge < TTL && Object.keys(_sparklinesCache).length > 0) {
-    console.log("[sparklines] CACHE HIT");
-    return _sparklinesCache;
+// Per-timeframe server-side cache
+const _sparklinesCache = {};
+const _sparklinesFetchedAt = {};
+
+async function fetchEquitySparklines(tf = "24H") {
+  const cfg     = SPARKLINE_TIMEFRAMES[tf] ?? SPARKLINE_TIMEFRAMES["24H"];
+  const cacheAge = Date.now() - (_sparklinesFetchedAt[tf] ?? 0);
+  const TTL     = isMarketOpen() ? 5 * 60_000 : 30 * 60_000;
+
+  if (cacheAge < TTL && _sparklinesCache[tf] && Object.keys(_sparklinesCache[tf]).length > 0) {
+    console.log(`[sparklines] CACHE HIT tf=${tf}`);
+    return _sparklinesCache[tf];
   }
 
   const results = {};
 
   await Promise.all(Object.entries(SPARKLINE_SYMBOLS).map(async ([id, yahooSym]) => {
     try {
-      // 1d range, 30m interval = ~13 candles on a trading day (9:30–16:00)
-      // Use 1d range with 15m to match visual density — 26 candles
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSym}?interval=15m&range=1d`;
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSym}?interval=${cfg.interval}&range=${cfg.range}`;
       const res = await fetch(url, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -452,14 +459,13 @@ async function fetchEquitySparklines() {
         },
       });
       if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
-      const data      = await res.json();
-      const result    = data?.chart?.result?.[0];
-      const timestamps= result?.timestamp ?? [];
-      const closes    = result?.indicators?.quote?.[0]?.close ?? [];
+      const data       = await res.json();
+      const result     = data?.chart?.result?.[0];
+      const timestamps = result?.timestamp ?? [];
+      const closes     = result?.indicators?.quote?.[0]?.close ?? [];
 
       if (closes.length < 3) throw new Error("insufficient candles");
 
-      // Filter nulls and pair with timestamps
       const candles = closes
         .map((c, i) => ({ v: c, t: timestamps[i] ? timestamps[i] * 1000 : i }))
         .filter(c => c.v != null && c.v > 0);
@@ -467,15 +473,14 @@ async function fetchEquitySparklines() {
       if (candles.length < 3) throw new Error("too many nulls");
 
       results[id] = candles;
-      console.log(`[sparklines] ${id}: ${candles.length} candles, last=${candles.at(-1)?.v}`);
+      console.log(`[sparklines] ${id} tf=${tf}: ${candles.length} candles`);
     } catch (e) {
-      console.warn(`[sparklines] ${id} failed: ${e.message}`);
+      console.warn(`[sparklines] ${id} tf=${tf} failed: ${e.message}`);
     }
   }));
 
-  // Cache results
-  Object.assign(_sparklinesCache, results);
-  _sparklinesFetchedAt = Date.now();
+  _sparklinesCache[tf]       = results;
+  _sparklinesFetchedAt[tf]   = Date.now();
 
   return results;
 }
@@ -641,9 +646,10 @@ export default async function handler(req, res) {
   // Called once on page init to seed equity sparklines with real data.
   if (req.query.sparklines === "true") {
     try {
-      const data = await fetchEquitySparklines();
-      console.log(`[/api/prices?sparklines] fetched ${Object.keys(data).length} assets`);
-      return res.status(200).json({ fetchedAt: new Date().toISOString(), sparklines: data });
+      const tf   = req.query.tf ?? "24H";
+      const data = await fetchEquitySparklines(tf);
+      console.log(`[/api/prices?sparklines] tf=${tf} fetched ${Object.keys(data).length} assets`);
+      return res.status(200).json({ fetchedAt: new Date().toISOString(), tf, sparklines: data });
     } catch (e) {
       console.error("[sparklines handler]", e.message);
       return res.status(500).json({ error: e.message, sparklines: {} });

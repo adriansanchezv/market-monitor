@@ -647,7 +647,7 @@ async function fetchCryptoKlines(symbol, interval = "1h", limit = 24) {
 // Maps label → Binance interval + candle count
 // ─────────────────────────────────────────────
 const TIMEFRAMES = {
-  "1H":  { interval: "5m",  limit: 12, label: "1H",  desc: "5-min candles, 1 hour"  },
+  "1H":  { interval: "5m",  limit: 12, label: "1H",  desc: "5-min candles, 1 hour"   },
   "4H":  { interval: "15m", limit: 16, label: "4H",  desc: "15-min candles, 4 hours" },
   "24H": { interval: "1h",  limit: 24, label: "24H", desc: "1-hour candles, 24 hours" },
 };
@@ -671,12 +671,12 @@ async function fetchKlinesForTimeframe(tf) {
 // via /api/prices?sparklines=true (Yahoo 15m candles, 1d range).
 // Called once on init — same pattern as fetchCryptoKlines.
 // ─────────────────────────────────────────────────────────────────
-const EQUITY_SPARKLINES_KEY = "mm_equity_sparklines_v1";
+const EQUITY_SPARKLINES_KEY = "mm_equity_sparklines_v1";  // prefix — tf appended per entry
 const EQUITY_SPARKLINES_TTL = 10 * 60 * 1000;  // 10min cache
 
-function loadEquitySparklines() {
+function loadEquitySparklines(tf = "24H") {
   try {
-    const raw = localStorage.getItem(EQUITY_SPARKLINES_KEY);
+    const raw = localStorage.getItem(`${EQUITY_SPARKLINES_KEY}_${tf}`);
     if (!raw) return null;
     const { data, fetchedAt } = JSON.parse(raw);
     if (Date.now() - fetchedAt > EQUITY_SPARKLINES_TTL) return null;
@@ -684,28 +684,27 @@ function loadEquitySparklines() {
   } catch { return null; }
 }
 
-function saveEquitySparklines(data) {
+function saveEquitySparklines(data, tf = "24H") {
   try {
-    localStorage.setItem(EQUITY_SPARKLINES_KEY, JSON.stringify({ data, fetchedAt: Date.now() }));
+    localStorage.setItem(`${EQUITY_SPARKLINES_KEY}_${tf}`, JSON.stringify({ data, fetchedAt: Date.now() }));
   } catch {}
 }
 
-async function fetchEquitySparklines() {
-  // Try cache first
-  const cached = loadEquitySparklines();
+async function fetchEquitySparklines(tf = "24H") {
+  const cached = loadEquitySparklines(tf);
   if (cached && Object.keys(cached).length > 0) {
-    console.log("[equity sparklines] cache hit");
+    console.log(`[equity sparklines] cache hit tf=${tf}`);
     return cached;
   }
   try {
-    const res = await fetch("/api/prices?sparklines=true", { cache: "no-store" });
+    const res = await fetch(`/api/prices?sparklines=true&tf=${tf}`, { cache: "no-store" });
     if (!res.ok) throw new Error(`/api/prices?sparklines ${res.status}`);
     const json = await res.json();
     const data = json.sparklines ?? {};
-    if (Object.keys(data).length > 0) saveEquitySparklines(data);
+    if (Object.keys(data).length > 0) saveEquitySparklines(data, tf);
     return data;
   } catch (e) {
-    console.warn("[equity sparklines] fetch failed:", e.message);
+    console.warn(`[equity sparklines] fetch failed tf=${tf}:`, e.message);
     return {};
   }
 }
@@ -945,12 +944,11 @@ const useMarketData = (isPaused = false) => {
 
     // Step 1b: fetch real sparklines for equity/macro assets via /api/prices?sparklines=true
     // Runs in parallel — does NOT block crypto init or polling.
-    fetchEquitySparklines().then(sparklines => {
+    fetchEquitySparklines(DEFAULT_TIMEFRAME).then(sparklines => {
       if (!sparklines || Object.keys(sparklines).length === 0) return;
       setAssets(prev => prev.map(asset => {
         const candles = sparklines[asset.id];
         if (!candles || candles.length < 3) return asset;
-        // Ensure last candle is current live price to connect sparkline tail to price card
         const sparkline = candles.map(c => ({ v: c.v, t: c.t }));
         if (asset.price > 0) sparkline[sparkline.length - 1] = { v: asset.price, t: Date.now() };
         console.log(`[equity sparkline] ${asset.id}: ${sparkline.length} real candles`);
@@ -988,21 +986,33 @@ const useMarketData = (isPaused = false) => {
     };
   }, [connectWS, fetchAndUpdate]);
 
-  // Refetch klines whenever timeframe changes.
-  // Cache results so switching back to a previously viewed timeframe is instant.
+  // Refetch klines whenever timeframe changes — both crypto (Binance) and equity (Yahoo).
+  // Cache results per timeframe so switching back is instant.
   useEffect(() => {
-    const cached = klinesCache.current[timeframe];
-    if (cached) {
-      // Already have this timeframe — apply immediately from cache
+    // ── Crypto klines (BTC/ETH via Binance) ──────────────────────
+    const cachedCrypto = klinesCache.current[timeframe];
+    if (cachedCrypto) {
       const livePrice = { BTC: _priceCache.BTC?.price, ETH: _priceCache.ETH?.price };
-      applyKlines(cached, livePrice);
-      return;
+      applyKlines(cachedCrypto, livePrice);
+    } else {
+      fetchKlinesForTimeframe(timeframe).then(klinesMap => {
+        klinesCache.current[timeframe] = klinesMap;
+        const livePrice = { BTC: _priceCache.BTC?.price, ETH: _priceCache.ETH?.price };
+        applyKlines(klinesMap, livePrice);
+      });
     }
-    // Fetch fresh klines for this timeframe
-    fetchKlinesForTimeframe(timeframe).then(klinesMap => {
-      klinesCache.current[timeframe] = klinesMap;
-      const livePrice = { BTC: _priceCache.BTC?.price, ETH: _priceCache.ETH?.price };
-      applyKlines(klinesMap, livePrice);
+
+    // ── Equity sparklines (SPY/QQQ/VIX/WTI/GOLD/DXY/TNX via Yahoo) ──
+    // fetchEquitySparklines handles its own per-TF cache
+    fetchEquitySparklines(timeframe).then(sparklines => {
+      if (!sparklines || Object.keys(sparklines).length === 0) return;
+      setAssets(prev => prev.map(asset => {
+        const candles = sparklines[asset.id];
+        if (!candles || candles.length < 3) return asset;
+        const sparkline = candles.map(c => ({ v: c.v, t: c.t }));
+        if (asset.price > 0) sparkline[sparkline.length - 1] = { v: asset.price, t: Date.now() };
+        return { ...asset, sparkline };
+      }));
     });
   }, [timeframe, applyKlines]);
 

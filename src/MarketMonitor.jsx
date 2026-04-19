@@ -594,58 +594,69 @@ function saveBaselines(data) {
 
 // Fetches 24hr stats from Binance for BTC + ETH.
 // Returns { BTC: { price, change, percentChange, prevClose, openPrice }, ETH: ... }
-async function fetchCryptoBaselines() {
-  const results = {};
-  await Promise.all(BINANCE_INIT_SYMBOLS.map(async ({ id, symbol }) => {
-    try {
-      const res  = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`, { cache: "no-store" });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const d    = await res.json();
-      const price        = parseFloat(parseFloat(d.lastPrice).toFixed(2));
-      const openPrice    = parseFloat(parseFloat(d.openPrice).toFixed(2));
-      const percentChange= parseFloat(parseFloat(d.priceChangePercent).toFixed(2));
-      const dollarChange = parseFloat(parseFloat(d.priceChange).toFixed(2));
-      const prevClose    = parseFloat(parseFloat(d.prevClosePrice).toFixed(2));
-      if (!price || !openPrice) throw new Error("zero price");
-      results[id] = { price, openPrice, percentChange, dollarChange, prevClose,
-        change: percentChange,  // `change` = % everywhere in this codebase
-        source: "Binance", confidence: "high", status: "valid",
-        marketState: "REGULAR", cached: false,
-        timestamp: new Date().toISOString(),
-      };
-    } catch (e) {
-      console.warn(`[baseline] ${id}: ${e.message}`);
+// ── Crypto data via server-side proxy ────────────────────────────
+// Binance blocks direct browser requests from Vercel's domain.
+// Route everything through /api/prices?crypto=true instead.
+
+// Per-TF cache for crypto klines (client-side)
+const _cryptoKlinesCache = {};
+
+async function fetchCryptoViaProxy(tf = "24H") {
+  if (_cryptoKlinesCache[tf]) {
+    console.log(`[crypto proxy] cache hit tf=${tf}`);
+    return _cryptoKlinesCache[tf];
+  }
+  try {
+    const res = await fetch(`/api/prices?crypto=true&tf=${tf}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`/api/prices?crypto ${res.status}`);
+    const data = await res.json();
+    if (data.BTC?.klines?.length) {
+      _cryptoKlinesCache[tf] = data;
+      // Expire cache after 5 min
+      setTimeout(() => { delete _cryptoKlinesCache[tf]; }, 5 * 60_000);
     }
-  }));
+    return data;
+  } catch (e) {
+    console.warn(`[crypto proxy] failed tf=${tf}:`, e.message);
+    return null;
+  }
+}
+
+// Keep these as no-ops that try direct Binance first, fall back to proxy
+// (Direct Binance works on localhost but not on Vercel domain)
+async function fetchCryptoBaselines() {
+  // Try proxy first (always works on Vercel)
+  const data = await fetchCryptoViaProxy("24H");
+  if (!data) return {};
+  const results = {};
+  if (data.BTC?.baseline) results.BTC = { ...data.BTC.baseline, klines: data.BTC.klines, status: "valid", marketState: "REGULAR", timestamp: new Date().toISOString(), cached: false };
+  if (data.ETH?.baseline) results.ETH = { ...data.ETH.baseline, klines: data.ETH.klines, status: "valid", marketState: "REGULAR", timestamp: new Date().toISOString(), cached: false };
   return results;
 }
 
-/**
- * fetchCryptoKlines(symbol, limit = 24)
- * Fetches real 1h candles from Binance klines endpoint.
- * Returns array of { v: closePrice, t: openTime } — matches sparkline format.
- * Falls back to null on any error so caller can use generated sparkline instead.
- */
 async function fetchCryptoKlines(symbol, interval = "1h", limit = 24) {
-  try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) throw new Error(`${res.status}`);
-    const candles = await res.json();
-    return candles.map(c => ({
-      v: parseFloat(parseFloat(c[4]).toFixed(2)),
-      t: c[0],
-    }));
-  } catch (e) {
-    console.warn(`[klines] ${symbol} ${interval}: ${e.message}`);
-    return null;
-  }
+  // No longer called directly — use fetchCryptoViaProxy instead.
+  // Kept for backward compatibility; returns null to signal caller to use proxy path.
+  return null;
+}
+
+async function fetchKlinesForTimeframe(tf) {
+  const data = await fetchCryptoViaProxy(tf);
+  if (!data) return { BTC: null, ETH: null };
+  return { BTC: data.BTC?.klines ?? null, ETH: data.ETH?.klines ?? null };
 }
 
 // ─────────────────────────────────────────────
 // TIMEFRAME CONFIG
 // Maps label → Binance interval + candle count
 // ─────────────────────────────────────────────
+// Candle duration in ms — used by live update logic to decide when to shift vs update in-place
+const SPARKLINE_TIMEFRAMES_FRONTEND = {
+  "1H":  { candleMs: 5  * 60_000 },   // 5-min candles
+  "4H":  { candleMs: 15 * 60_000 },   // 15-min candles
+  "24H": { candleMs: 60 * 60_000 },   // 1-hour candles
+};
+
 const TIMEFRAMES = {
   "1H":  { interval: "5m",  limit: 12, label: "1H",  desc: "5-min candles, 1 hour"   },
   "4H":  { interval: "15m", limit: 16, label: "4H",  desc: "15-min candles, 4 hours" },
@@ -858,34 +869,59 @@ const useMarketData = (isPaused = false) => {
 
   // ── Polling — always runs, handles all non-WS assets ────────────────
   const fetchAndUpdate = useCallback(async () => {
-    if (isPaused) return; // paused — skip this cycle
+    if (isPaused) return;
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
     try {
       const fresh = await fetchAllPrices({ skipVIX: !getMarketStatus().isOpen });
       setAssets(prev => fresh.map(asset => {
-        if (!IS_LOCALHOST && (asset.id === "BTC" || asset.id === "ETH")) {
+        // BTC/ETH come from Binance WS — polling would overwrite with stale /api/prices data
+        if (asset.id === "BTC" || asset.id === "ETH") {
           return prev.find(p => p.id === asset.id) ?? asset;
         }
+
         const existing = prev.find(p => p.id === asset.id);
-        // For equity/macro assets: only shift sparkline when price actually changes
-        // (avoids appending identical prices when market is closed)
-        const isCrypto = asset.category === "crypto";
-        let newSparkline;
-        if (existing?.sparkline?.length > 0) {
-          const lastV = existing.sparkline.at(-1)?.v;
-          const priceChanged = asset.price !== lastV;
-          if (priceChanged || !existing.sparkline.length) {
-            newSparkline = [...existing.sparkline.slice(1), { v: asset.price, t: Date.now() }];
-          } else {
-            // Same price — update last point timestamp but don't shift
-            newSparkline = [...existing.sparkline.slice(0, -1), { v: asset.price, t: Date.now() }];
-          }
-        } else {
-          newSparkline = generateSparkline(asset.price, asset.vol);
+        if (!existing?.sparkline?.length) {
+          // No history yet — generate placeholder until equity sparklines arrive
+          return { ...asset, sparkline: generateSparkline(asset.price, asset.vol), loading: false };
         }
-        return { ...asset, sparkline: newSparkline, loading: false,
-          flash: existing ? (asset.price > existing.price ? "up" : asset.price < existing.price ? "down" : null) : null };
+
+        // CRITICAL: update last candle in-place rather than always shifting.
+        // Shifting every poll cycle (e.g. every 12s) creates a fake high-frequency
+        // chart that looks like noise. Instead:
+        //   • Same price → update timestamp only (market closed, no movement)
+        //   • Price changed but within same candle window → update last point value
+        //   • Price changed significantly (new candle period) → shift + append
+        const spark    = existing.sparkline;
+        const last     = spark.at(-1);
+        const lastV    = last?.v ?? 0;
+        const newPrice = asset.price;
+        const mktOpen  = getMarketStatus().isOpen;
+
+        let newSparkline;
+        if (!mktOpen || newPrice === lastV) {
+          // Market closed or no change — just update the last point's value (no shift)
+          newSparkline = [...spark.slice(0, -1), { v: newPrice, t: Date.now() }];
+        } else {
+          // Market open and price moved — update last point in-place
+          // Only shift (add new candle) if enough time has passed for a new candle period
+          const candle  = SPARKLINE_TIMEFRAMES_FRONTEND[DEFAULT_TIMEFRAME]?.candleMs ?? 15 * 60_000;
+          const elapsed = Date.now() - (last?.t ?? 0);
+          if (elapsed >= candle) {
+            // New candle period — shift oldest off, append new
+            newSparkline = [...spark.slice(1), { v: newPrice, t: Date.now() }];
+          } else {
+            // Same candle — update last value in-place (no spike)
+            newSparkline = [...spark.slice(0, -1), { v: newPrice, t: Date.now() }];
+          }
+        }
+
+        return {
+          ...asset,
+          sparkline: newSparkline,
+          loading: false,
+          flash: newPrice > existing.price ? "up" : newPrice < existing.price ? "down" : null,
+        };
       }));
       setLastUpdated(new Date());
       setError(null);
@@ -895,17 +931,11 @@ const useMarketData = (isPaused = false) => {
   }, [isPaused]);
 
   useEffect(() => {
-    // Step 1a: fetch crypto baselines + klines from Binance (CORS-open, fast)
-    Promise.all([
-      fetchCryptoBaselines(),
-      fetchCryptoKlines("BTCUSDT", TIMEFRAMES[DEFAULT_TIMEFRAME].interval, TIMEFRAMES[DEFAULT_TIMEFRAME].limit),
-      fetchCryptoKlines("ETHUSDT", TIMEFRAMES[DEFAULT_TIMEFRAME].interval, TIMEFRAMES[DEFAULT_TIMEFRAME].limit),
-    ]).then(([baselines, btcKlines, ethKlines]) => {
+    // Step 1a: fetch crypto baselines + klines via server-side proxy
+    // fetchCryptoBaselines() now calls /api/prices?crypto=true which fetches
+    // Binance server-side (avoids browser CORS block on Vercel domain).
+    fetchCryptoBaselines().then(baselines => {
       if (Object.keys(baselines).length === 0) return;
-
-      // Attach klines to each baseline entry
-      if (btcKlines?.length) baselines.BTC = { ...baselines.BTC, klines: btcKlines };
-      if (ethKlines?.length) baselines.ETH = { ...baselines.ETH, klines: ethKlines };
 
       saveBaselines(baselines);
 
@@ -916,9 +946,10 @@ const useMarketData = (isPaused = false) => {
         let sparkline;
         if (b.klines?.length >= 2) {
           sparkline = b.klines.map(k => ({ ...k }));
+          // Update last point to exact live price
           sparkline[sparkline.length - 1] = { v: b.price, t: Date.now() };
         } else {
-          sparkline = generateSparkline(b.openPrice, asset.vol);
+          sparkline = generateSparkline(b.openPrice ?? b.price, asset.vol);
           sparkline[sparkline.length - 1] = { v: b.price, t: Date.now() };
         }
 
@@ -936,10 +967,11 @@ const useMarketData = (isPaused = false) => {
       }));
 
       Object.entries(baselines).forEach(([id, b]) => { _priceCache[id] = b; });
-
-      if (btcKlines || ethKlines) {
-        klinesCache.current[DEFAULT_TIMEFRAME] = { BTC: btcKlines, ETH: ethKlines };
-      }
+      // Seed klines cache for DEFAULT_TIMEFRAME
+      klinesCache.current[DEFAULT_TIMEFRAME] = {
+        BTC: baselines.BTC?.klines ?? null,
+        ETH: baselines.ETH?.klines ?? null,
+      };
     });
 
     // Step 1b: fetch real sparklines for equity/macro assets via /api/prices?sparklines=true

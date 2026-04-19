@@ -656,6 +656,58 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── Crypto klines proxy: ?crypto=true&tf=1H|4H|24H ─────────────
+  // Fetches BTC+ETH klines + 24hr baselines from Binance server-side.
+  // Needed because Binance blocks direct browser requests from Vercel domain.
+  if (req.query.crypto === "true") {
+    try {
+      const tf  = req.query.tf ?? "24H";
+      const TF_TO_BINANCE = {
+        "1H":  { interval: "5m",  limit: 12 },
+        "4H":  { interval: "15m", limit: 16 },
+        "24H": { interval: "1h",  limit: 24 },
+      };
+      const cfg = TF_TO_BINANCE[tf] ?? TF_TO_BINANCE["24H"];
+
+      const fetchBinanceKlines = async (symbol) => {
+        const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${cfg.interval}&limit=${cfg.limit}`);
+        if (!r.ok) throw new Error(`Binance klines ${r.status}`);
+        const d = await r.json();
+        return d.map(c => ({ v: parseFloat(parseFloat(c[4]).toFixed(2)), t: c[0] }));
+      };
+
+      const fetchBinanceBaseline = async (symbol) => {
+        const r = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
+        if (!r.ok) throw new Error(`Binance ticker ${r.status}`);
+        const d = await r.json();
+        return {
+          price:         parseFloat(parseFloat(d.lastPrice).toFixed(2)),
+          openPrice:     parseFloat(parseFloat(d.openPrice).toFixed(2)),
+          percentChange: parseFloat(parseFloat(d.priceChangePercent).toFixed(2)),
+          prevClose:     parseFloat(parseFloat(d.prevClosePrice).toFixed(2)),
+          change:        parseFloat(parseFloat(d.priceChangePercent).toFixed(2)),
+          source: "Binance", confidence: "high",
+        };
+      };
+
+      const [btcKlines, ethKlines, btcBase, ethBase] = await Promise.all([
+        fetchBinanceKlines("BTCUSDT"),
+        fetchBinanceKlines("ETHUSDT"),
+        fetchBinanceBaseline("BTCUSDT"),
+        fetchBinanceBaseline("ETHUSDT"),
+      ]);
+
+      return res.status(200).json({
+        fetchedAt: new Date().toISOString(), tf,
+        BTC: { baseline: btcBase, klines: btcKlines },
+        ETH: { baseline: ethBase, klines: ethKlines },
+      });
+    } catch (e) {
+      console.error("[crypto handler]", e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   const fetchedAt  = new Date().toISOString();
   const marketOpen = isMarketOpen();
   const skipVIX    = !marketOpen;

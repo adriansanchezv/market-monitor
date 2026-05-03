@@ -1,0 +1,103 @@
+<h2>How should the dashboards be navigated?</h2>
+<p class="subtitle">The existing Market Monitor is one large component. We need to decide how the new analytical dashboards plug in.</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Top Tab Bar</h3>
+      <p>Horizontal tabs across the top — Market Monitor | Monte Carlo | Regime | Sensitivity | Backtester | Risk | Sentiment | Correlation</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Preview</div>
+        <div class="mockup-body" style="padding:0">
+          <div style="background:#1a1a2e;padding:8px 12px;display:flex;gap:6px;overflow-x:auto;border-bottom:1px solid #333">
+            <span style="background:#6c63ff;color:#fff;padding:4px 10px;border-radius:4px;font-size:11px;white-space:nowrap">Market Monitor</span>
+            <span style="color:#888;padding:4px 10px;font-size:11px;white-space:nowrap">Monte Carlo</span>
+            <span style="color:#888;padding:4px 10px;font-size:11px;white-space:nowrap">Regime</span>
+            <span style="color:#888;padding:4px 10px;font-size:11px;white-space:nowrap">Sensitivity</span>
+            <span style="color:#888;padding:4px 10px;font-size:11px;white-space:nowrap">Backtester</span>
+            <span style="color:#888;padding:4px 10px;font-size:11px;white-space:nowrap">Risk</span>
+            <span style="color:#888;padding:4px 10px;font-size:11px;white-space:nowrap">Sentiment</span>
+            <span style="color:#888;padding:4px 10px;font-size:11px;white-space:nowrap">Correlation</span>
+          </div>
+          <div style="padding:12px;color:#555;font-size:12px">← Dashboard content fills below</div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>Pros</h4><ul><li>Familiar pattern</li><li>One-click access</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>8 tabs is crowded on small screens</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Sidebar Navigation</h3>
+      <p>Collapsible left sidebar with icons + labels. More room for tab names, works well as you add more tools.</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Preview</div>
+        <div class="mockup-body" style="padding:0;display:flex;min-height:120px">
+          <div style="background:#12121f;width:140px;padding:8px 0;border-right:1px solid #333;flex-shrink:0">
+            <div style="padding:6px 12px;background:#6c63ff22;border-left:2px solid #6c63ff;color:#c0b8ff;font-size:11px">📊 Live Monitor</div>
+            <div style="padding:6px 12px;color:#666;font-size:11px">🎲 Monte Carlo</div>
+            <div style="padding:6px 12px;color:#666;font-size:11px">🔍 Regime</div>
+            <div style="padding:6px 12px;color:#666;font-size:11px">🎚 Sensitivity</div>
+            <div style="padding:6px 12px;color:#666;font-size:11px">⏮ Backtester</div>
+            <div style="padding:6px 12px;color:#666;font-size:11px">⚠️ Risk</div>
+            <div style="padding:6px 12px;color:#666;font-size:11px">💬 Sentiment</div>
+            <div style="padding:6px 12px;color:#666;font-size:11px">🔗 Correlation</div>
+          </div>
+          <div style="padding:12px;color:#555;font-size:12px;flex:1">← Dashboard content area</div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>Pros</h4><ul><li>Scales to many tools</li><li>Easy to add more later</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Takes horizontal space</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Home Dashboard + Drill-in</h3>
+      <p>A card grid home screen showing live summary tiles for each tool. Click a card to open the full dashboard.</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Preview</div>
+        <div class="mockup-body" style="padding:8px">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+            <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;font-size:10px">
+              <div style="color:#6c63ff;font-weight:bold">📊 Live Monitor</div>
+              <div style="color:#888;margin-top:2px">SPY -0.8% VIX 18.4</div>
+            </div>
+            <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;font-size:10px">
+              <div style="color:#4ecdc4;font-weight:bold">🎲 Monte Carlo</div>
+              <div style="color:#888;margin-top:2px">P95: +24% | P5: -18%</div>
+            </div>
+            <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;font-size:10px">
+              <div style="color:#ffd700;font-weight:bold">🔍 Regime</div>
+              <div style="color:#888;margin-top:2px">Bull Trend — 78%</div>
+            </div>
+            <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;font-size:10px">
+              <div style="color:#ff6b6b;font-weight:bold">⚠️ Portfolio Risk</div>
+              <div style="color:#888;margin-top:2px">VaR 1D: -2.1%</div>
+            </div>
+            <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;font-size:10px">
+              <div style="color:#a8e6cf;font-weight:bold">💬 Sentiment</div>
+              <div style="color:#888;margin-top:2px">Bullish 62%</div>
+            </div>
+            <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;font-size:10px">
+              <div style="color:#ff9f43;font-weight:bold">🔗 Correlation</div>
+              <div style="color:#888;margin-top:2px">3 breaks detected</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>Pros</h4><ul><li>At-a-glance summary of everything</li><li>Live tiles feel like a real terminal</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Extra click to reach any tool</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

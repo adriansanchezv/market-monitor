@@ -1,0 +1,259 @@
+<h2>Risk & Signal Dashboards — Design Overview</h2>
+<p class="subtitle">Three dashboards: Portfolio Risk, Sentiment Analysis, Correlation Break Detector.</p>
+
+<!-- Portfolio Risk -->
+<div class="section">
+  <h3>⚠️ Portfolio Risk Dashboard</h3>
+  <p class="subtitle">Enter positions (ticker + weight), get VaR, CVaR, beta, correlation matrix, and stress scenario impacts.</p>
+  <div class="mockup">
+    <div class="mockup-header">Portfolio Risk — Positions + Risk Metrics</div>
+    <div class="mockup-body" style="font-size:11px;display:flex;flex-direction:column;gap:10px">
+      <!-- Position input table -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;overflow:hidden">
+        <div style="padding:8px 12px;border-bottom:1px solid #1e1e3a;display:flex;justify-content:space-between;align-items:center">
+          <span style="color:#888">Positions</span>
+          <span style="background:#6c63ff22;color:#a78bfa;border:1px solid #6c63ff44;border-radius:4px;padding:3px 8px;font-size:9px;cursor:pointer">+ Add Position</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;font-size:10px">
+          <div style="padding:5px 10px;color:#555;border-bottom:1px solid #111">Ticker</div>
+          <div style="padding:5px 10px;color:#555;border-bottom:1px solid #111">Weight %</div>
+          <div style="padding:5px 10px;color:#555;border-bottom:1px solid #111">Value $</div>
+          <div style="padding:5px 10px;color:#555;border-bottom:1px solid #111"></div>
+
+          <div style="padding:5px 10px;color:#c0b8ff;border-bottom:1px solid #111">SPY</div>
+          <div style="padding:5px 10px;color:#888;border-bottom:1px solid #111">45%</div>
+          <div style="padding:5px 10px;color:#888;border-bottom:1px solid #111">$4,500</div>
+          <div style="padding:5px 10px;border-bottom:1px solid #111;color:#555;cursor:pointer">✕</div>
+
+          <div style="padding:5px 10px;color:#c0b8ff;border-bottom:1px solid #111">NVDA</div>
+          <div style="padding:5px 10px;color:#888;border-bottom:1px solid #111">30%</div>
+          <div style="padding:5px 10px;color:#888;border-bottom:1px solid #111">$3,000</div>
+          <div style="padding:5px 10px;border-bottom:1px solid #111;color:#555;cursor:pointer">✕</div>
+
+          <div style="padding:5px 10px;color:#c0b8ff">BTC</div>
+          <div style="padding:5px 10px;color:#888">25%</div>
+          <div style="padding:5px 10px;color:#888">$2,500</div>
+          <div style="padding:5px 10px;color:#555;cursor:pointer">✕</div>
+        </div>
+      </div>
+
+      <!-- Risk metrics grid -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px">
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px">
+          <div style="color:#555;font-size:9px">1-DAY VaR (95%)</div>
+          <div style="color:#ef4444;font-size:16px;font-weight:bold;margin-top:4px">-$214</div>
+          <div style="color:#444;font-size:9px">-2.14%</div>
+        </div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px">
+          <div style="color:#555;font-size:9px">CVaR (EXPECTED LOSS)</div>
+          <div style="color:#ef4444;font-size:16px;font-weight:bold;margin-top:4px">-$338</div>
+          <div style="color:#444;font-size:9px">-3.38%</div>
+        </div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px">
+          <div style="color:#555;font-size:9px">PORTFOLIO BETA</div>
+          <div style="color:#f97316;font-size:16px;font-weight:bold;margin-top:4px">1.42</div>
+          <div style="color:#444;font-size:9px">vs SPY</div>
+        </div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px">
+          <div style="color:#555;font-size:9px">SHARPE (1Y)</div>
+          <div style="color:#22c55e;font-size:16px;font-weight:bold;margin-top:4px">1.87</div>
+          <div style="color:#444;font-size:9px">rf = 5.25%</div>
+        </div>
+      </div>
+
+      <!-- Correlation matrix + stress tests side by side -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <!-- Correlation heatmap -->
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;padding:10px">
+          <div style="color:#888;font-size:10px;margin-bottom:8px">Correlation Matrix</div>
+          <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:2px;font-size:9px">
+            <div style="padding:2px"></div>
+            <div style="padding:3px;text-align:center;color:#555">SPY</div>
+            <div style="padding:3px;text-align:center;color:#555">NVDA</div>
+            <div style="padding:3px;text-align:center;color:#555">BTC</div>
+
+            <div style="padding:3px;color:#555">SPY</div>
+            <div style="padding:3px;background:#22c55e;border-radius:2px;text-align:center;color:#fff">1.00</div>
+            <div style="padding:3px;background:#22c55e99;border-radius:2px;text-align:center;color:#fff">0.72</div>
+            <div style="padding:3px;background:#4ecdc455;border-radius:2px;text-align:center;color:#fff">0.31</div>
+
+            <div style="padding:3px;color:#555">NVDA</div>
+            <div style="padding:3px;background:#22c55e99;border-radius:2px;text-align:center;color:#fff">0.72</div>
+            <div style="padding:3px;background:#22c55e;border-radius:2px;text-align:center;color:#fff">1.00</div>
+            <div style="padding:3px;background:#4ecdc433;border-radius:2px;text-align:center;color:#fff">0.28</div>
+
+            <div style="padding:3px;color:#555">BTC</div>
+            <div style="padding:3px;background:#4ecdc455;border-radius:2px;text-align:center;color:#fff">0.31</div>
+            <div style="padding:3px;background:#4ecdc433;border-radius:2px;text-align:center;color:#fff">0.28</div>
+            <div style="padding:3px;background:#22c55e;border-radius:2px;text-align:center;color:#fff">1.00</div>
+          </div>
+        </div>
+        <!-- Stress scenarios -->
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;padding:10px">
+          <div style="color:#888;font-size:10px;margin-bottom:8px">Stress Scenarios</div>
+          <div style="display:flex;flex-direction:column;gap:4px;font-size:10px">
+            <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #111">
+              <span style="color:#888">2008 GFC</span><span style="color:#ef4444">-$4,820 (-48.2%)</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #111">
+              <span style="color:#888">COVID Crash</span><span style="color:#ef4444">-$3,390 (-33.9%)</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #111">
+              <span style="color:#888">Rate Shock +2%</span><span style="color:#f97316">-$1,240 (-12.4%)</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:4px 0">
+              <span style="color:#888">BTC -50%</span><span style="color:#f97316">-$1,250 (-12.5%)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sentiment Analysis -->
+<div class="section">
+  <h3>💬 Sentiment Analysis</h3>
+  <p class="subtitle">Aggregates the existing NewsAPI feed + social feed into a rolling sentiment score. NLP keyword scoring (already in marketService.js), now surfaced as its own dashboard with trend and per-asset breakdown.</p>
+  <div class="mockup">
+    <div class="mockup-header">Sentiment — Score Trend + Breakdown</div>
+    <div class="mockup-body" style="font-size:11px;display:flex;flex-direction:column;gap:10px">
+      <!-- Overall score -->
+      <div style="display:flex;gap:10px;align-items:stretch">
+        <div style="background:#22c55e22;border:1px solid #22c55e44;border-radius:8px;padding:14px 20px;text-align:center;min-width:100px">
+          <div style="color:#555;font-size:9px;text-transform:uppercase">Overall</div>
+          <div style="color:#22c55e;font-size:28px;font-weight:bold;margin:4px 0">62</div>
+          <div style="color:#22c55e;font-size:10px">Bullish</div>
+        </div>
+        <div style="flex:1;background:#0d0d1a;border:1px solid #1e1e3a;border-radius:8px;padding:10px">
+          <div style="color:#555;font-size:9px;margin-bottom:6px">7-DAY ROLLING SCORE</div>
+          <svg width="100%" height="50" viewBox="0 0 300 50" preserveAspectRatio="none">
+            <line x1="0" y1="25" x2="300" y2="25" stroke="#333" stroke-width="0.5" stroke-dasharray="3"/>
+            <path d="M0,30 Q30,35 60,28 Q90,20 120,32 Q150,38 180,25 Q210,15 240,18 Q270,20 300,12" stroke="#22c55e" stroke-width="2" fill="none"/>
+            <path d="M0,30 Q30,35 60,28 Q90,20 120,32 Q150,38 180,25 Q210,15 240,18 Q270,20 300,12 L300,50 L0,50Z" fill="#22c55e11"/>
+          </svg>
+          <div style="display:flex;justify-content:space-between;color:#555;font-size:8px;margin-top:2px">
+            <span>7d ago</span><span>Today</span>
+          </div>
+        </div>
+      </div>
+      <!-- Per-category breakdown -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;overflow:hidden">
+        <div style="padding:7px 12px;border-bottom:1px solid #1e1e3a;color:#888;font-size:10px">Sentiment by Category (last 24h)</div>
+        <div style="display:flex;flex-direction:column;gap:0">
+          <div style="display:grid;grid-template-columns:80px 1fr 60px;align-items:center;padding:6px 12px;border-bottom:1px solid #111;gap:8px">
+            <span style="color:#888;font-size:10px">Macro</span>
+            <div style="background:#1a1a2e;border-radius:3px;height:8px;overflow:hidden"><div style="background:#f97316;height:100%;width:45%"></div></div>
+            <span style="color:#f97316;font-size:10px;text-align:right">Neutral 45</span>
+          </div>
+          <div style="display:grid;grid-template-columns:80px 1fr 60px;align-items:center;padding:6px 12px;border-bottom:1px solid #111;gap:8px">
+            <span style="color:#888;font-size:10px">Equities</span>
+            <div style="background:#1a1a2e;border-radius:3px;height:8px;overflow:hidden"><div style="background:#22c55e;height:100%;width:78%"></div></div>
+            <span style="color:#22c55e;font-size:10px;text-align:right">Bullish 78</span>
+          </div>
+          <div style="display:grid;grid-template-columns:80px 1fr 60px;align-items:center;padding:6px 12px;border-bottom:1px solid #111;gap:8px">
+            <span style="color:#888;font-size:10px">Crypto</span>
+            <div style="background:#1a1a2e;border-radius:3px;height:8px;overflow:hidden"><div style="background:#22c55e;height:100%;width:71%"></div></div>
+            <span style="color:#22c55e;font-size:10px;text-align:right">Bullish 71</span>
+          </div>
+          <div style="display:grid;grid-template-columns:80px 1fr 60px;align-items:center;padding:6px 12px;border-bottom:1px solid #111;gap:8px">
+            <span style="color:#888;font-size:10px">Commodities</span>
+            <div style="background:#1a1a2e;border-radius:3px;height:8px;overflow:hidden"><div style="background:#ef4444;height:100%;width:38%"></div></div>
+            <span style="color:#ef4444;font-size:10px;text-align:right">Bearish 38</span>
+          </div>
+          <div style="display:grid;grid-template-columns:80px 1fr 60px;align-items:center;padding:6px 12px;gap:8px">
+            <span style="color:#888;font-size:10px">Geopolitical</span>
+            <div style="background:#1a1a2e;border-radius:3px;height:8px;overflow:hidden"><div style="background:#ef4444;height:100%;width:28%"></div></div>
+            <span style="color:#ef4444;font-size:10px;text-align:right">Risk-Off 28</span>
+          </div>
+        </div>
+      </div>
+      <!-- Recent headlines with scores -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;overflow:hidden">
+        <div style="padding:7px 12px;border-bottom:1px solid #1e1e3a;color:#888;font-size:10px">Signal Articles</div>
+        <div style="padding:8px 12px;border-bottom:1px solid #111;display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="color:#777;font-size:10px;flex:1">Tech earnings beat estimates; NVDA surges 7% in after-hours</span>
+          <span style="background:#22c55e22;color:#22c55e;font-size:9px;padding:2px 6px;border-radius:3px;white-space:nowrap">Bullish</span>
+        </div>
+        <div style="padding:8px 12px;border-bottom:1px solid #111;display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="color:#777;font-size:10px;flex:1">Fed signals potential rate pause as inflation data cools</span>
+          <span style="background:#f9731622;color:#f97316;font-size:9px;padding:2px 6px;border-radius:3px;white-space:nowrap">Neutral</span>
+        </div>
+        <div style="padding:8px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="color:#777;font-size:10px;flex:1">NATO emergency session called amid escalating tensions</span>
+          <span style="background:#ef444422;color:#ef4444;font-size:9px;padding:2px 6px;border-radius:3px;white-space:nowrap">Risk-Off</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Correlation Break Detector -->
+<div class="section">
+  <h3>🔗 Correlation Break Detector</h3>
+  <p class="subtitle">Computes rolling 30/60/90-day correlations between asset pairs. Fires an alert when current correlation deviates from the 1-year baseline by more than 2 standard deviations.</p>
+  <div class="mockup">
+    <div class="mockup-header">Correlation — Matrix + Break Alerts</div>
+    <div class="mockup-body" style="font-size:11px;display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Assets <span style="color:#c0b8ff">SPY QQQ BTC ETH GLD TLT</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Window <span style="color:#c0b8ff">30d</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Threshold <span style="color:#c0b8ff">2σ</span></div>
+      </div>
+
+      <!-- Break alerts -->
+      <div style="background:#ef444411;border:1px solid #ef444433;border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:6px">
+        <div style="color:#ef4444;font-size:10px;font-weight:bold">⚠ 2 Correlation Breaks Detected</div>
+        <div style="display:flex;justify-content:space-between;font-size:10px">
+          <span style="color:#888"><span style="color:#c0b8ff">SPY ↔ BTC</span> — current: <span style="color:#ef4444">0.68</span> vs baseline: 0.31 · <span style="color:#ef4444">+2.4σ</span></span>
+          <span style="color:#555">2d ago</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px">
+          <span style="color:#888"><span style="color:#c0b8ff">SPY ↔ GLD</span> — current: <span style="color:#ef4444">-0.52</span> vs baseline: -0.18 · <span style="color:#ef4444">-2.1σ</span></span>
+          <span style="color:#555">5d ago</span>
+        </div>
+      </div>
+
+      <!-- Heatmap grid -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;padding:10px">
+        <div style="color:#888;font-size:10px;margin-bottom:8px">30-Day Rolling Correlation Matrix</div>
+        <div style="display:grid;grid-template-columns:32px repeat(6,1fr);gap:2px;font-size:9px">
+          <div></div>
+          <div style="text-align:center;color:#555;padding:2px">SPY</div>
+          <div style="text-align:center;color:#555;padding:2px">QQQ</div>
+          <div style="text-align:center;color:#555;padding:2px">BTC</div>
+          <div style="text-align:center;color:#555;padding:2px">ETH</div>
+          <div style="text-align:center;color:#555;padding:2px">GLD</div>
+          <div style="text-align:center;color:#555;padding:2px">TLT</div>
+
+          <div style="color:#555;padding:2px;text-align:right">SPY</div>
+          <div style="background:#22c55e;border-radius:2px;padding:3px;text-align:center;color:#fff">1.00</div>
+          <div style="background:#22c55ecc;border-radius:2px;padding:3px;text-align:center;color:#fff">0.88</div>
+          <div style="background:#22c55e88;border-radius:2px;padding:3px;text-align:center;color:#fff;border:1px solid #ef4444">0.68</div>
+          <div style="background:#22c55e66;border-radius:2px;padding:3px;text-align:center;color:#fff">0.55</div>
+          <div style="background:#ef444488;border-radius:2px;padding:3px;text-align:center;color:#fff;border:1px solid #ef4444">-0.52</div>
+          <div style="background:#ef444466;border-radius:2px;padding:3px;text-align:center;color:#fff">-0.41</div>
+
+          <div style="color:#555;padding:2px;text-align:right">QQQ</div>
+          <div style="background:#22c55ecc;border-radius:2px;padding:3px;text-align:center;color:#fff">0.88</div>
+          <div style="background:#22c55e;border-radius:2px;padding:3px;text-align:center;color:#fff">1.00</div>
+          <div style="background:#22c55e55;border-radius:2px;padding:3px;text-align:center;color:#fff">0.51</div>
+          <div style="background:#22c55e66;border-radius:2px;padding:3px;text-align:center;color:#fff">0.58</div>
+          <div style="background:#ef444455;border-radius:2px;padding:3px;text-align:center;color:#fff">-0.38</div>
+          <div style="background:#ef444444;border-radius:2px;padding:3px;text-align:center;color:#fff">-0.33</div>
+
+          <div style="color:#555;padding:2px;text-align:right">BTC</div>
+          <div style="background:#22c55e88;border-radius:2px;padding:3px;text-align:center;color:#fff;border:1px solid #ef4444">0.68</div>
+          <div style="background:#22c55e55;border-radius:2px;padding:3px;text-align:center;color:#fff">0.51</div>
+          <div style="background:#22c55e;border-radius:2px;padding:3px;text-align:center;color:#fff">1.00</div>
+          <div style="background:#22c55ecc;border-radius:2px;padding:3px;text-align:center;color:#fff">0.82</div>
+          <div style="background:#4ecdc444;border-radius:2px;padding:3px;text-align:center;color:#fff">0.08</div>
+          <div style="background:#ef444433;border-radius:2px;padding:3px;text-align:center;color:#fff">-0.22</div>
+        </div>
+        <div style="color:#555;font-size:8px;margin-top:6px">Red border = correlation break (>2σ from 1Y baseline)</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:8px">Does the Risk & Signal group look right? Any changes before I write up the full design document?</p>

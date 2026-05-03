@@ -1,0 +1,224 @@
+<h2>Analysis Dashboards — Design Overview</h2>
+<p class="subtitle">Four dashboards in the Analysis group. Scroll to see all. Let me know if anything needs changing.</p>
+
+<!-- Monte Carlo -->
+<div class="section">
+  <h3>🎲 Monte Carlo Simulation</h3>
+  <p class="subtitle">Geometric Brownian Motion with drift + vol derived from FMP historical data. Runs in a Vercel function, results stream back.</p>
+  <div class="mockup">
+    <div class="mockup-header">Monte Carlo — Controls + Output</div>
+    <div class="mockup-body" style="display:flex;flex-direction:column;gap:10px;font-size:11px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Ticker <span style="color:#c0b8ff">SPY</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Horizon <span style="color:#c0b8ff">1 Year</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Simulations <span style="color:#c0b8ff">10,000</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Initial $ <span style="color:#c0b8ff">$10,000</span></div>
+        <div style="background:#6c63ff;border-radius:5px;padding:6px 12px;color:#fff">▶ Run</div>
+      </div>
+      <!-- Fan chart sketch -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;padding:12px;position:relative;height:120px;overflow:hidden">
+        <svg width="100%" height="100%" viewBox="0 0 400 100" preserveAspectRatio="none">
+          <!-- P5-P95 band (widest, darkest) -->
+          <path d="M0,50 Q100,45 200,35 Q300,20 400,5 L400,95 Q300,80 200,75 Q100,65 0,60Z" fill="#6c63ff11"/>
+          <!-- P25-P75 band -->
+          <path d="M0,50 Q100,46 200,40 Q300,30 400,20 L400,80 Q300,70 200,62 Q100,56 0,55Z" fill="#6c63ff22"/>
+          <!-- Median line -->
+          <path d="M0,50 Q100,47 200,44 Q300,40 400,35" stroke="#6c63ff" stroke-width="2" fill="none"/>
+          <!-- Zero line -->
+          <line x1="0" y1="50" x2="400" y2="50" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
+        </svg>
+        <div style="position:absolute;top:6px;right:10px;display:flex;flex-direction:column;gap:2px">
+          <span style="color:#4ecdc4;font-size:9px">━ P95 +38%</span>
+          <span style="color:#6c63ff;font-size:9px">━ P75 +22%</span>
+          <span style="color:#a78bfa;font-size:9px">━ P50 +14%</span>
+          <span style="color:#f97316;font-size:9px">━ P25 +4%</span>
+          <span style="color:#ef4444;font-size:9px">━ P5 -16%</span>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px">
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px"><div style="color:#555;font-size:9px">MEDIAN</div><div style="color:#22c55e;font-size:14px;font-weight:bold">+14.2%</div></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px"><div style="color:#555;font-size:9px">VaR 95%</div><div style="color:#ef4444;font-size:14px;font-weight:bold">-16.4%</div></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px"><div style="color:#555;font-size:9px">PROB PROFIT</div><div style="color:#f97316;font-size:14px;font-weight:bold">71.3%</div></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px"><div style="color:#555;font-size:9px">MAX DRAW (P95)</div><div style="color:#ef4444;font-size:14px;font-weight:bold">-28.1%</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Regime Detection -->
+<div class="section">
+  <h3>🔍 Regime Detection</h3>
+  <p class="subtitle">Rolling MA crossovers + VIX level + momentum classify the market into 4 regimes. Color bands overlaid on the price chart.</p>
+  <div class="mockup">
+    <div class="mockup-header">Regime Detection — Price + Regime Overlay</div>
+    <div class="mockup-body" style="font-size:11px;display:flex;flex-direction:column;gap:10px">
+      <!-- Current regime badge -->
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="background:#22c55e22;border:1px solid #22c55e44;border-radius:20px;padding:6px 14px;color:#22c55e;font-weight:bold">● BULL TREND</div>
+        <div style="color:#555">Duration: 47 days · Avg return in regime: +18.2% ann.</div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888;margin-left:auto">Ticker <span style="color:#c0b8ff">SPY</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Window <span style="color:#c0b8ff">1Y</span></div>
+      </div>
+      <!-- Chart with regime bands -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;padding:12px;height:110px;position:relative;overflow:hidden">
+        <svg width="100%" height="100%" viewBox="0 0 400 90" preserveAspectRatio="none">
+          <!-- Bear regime band (red) -->
+          <rect x="0" y="0" width="80" height="90" fill="#ef444411"/>
+          <!-- High-vol band (orange) -->
+          <rect x="80" y="0" width="60" height="90" fill="#f9731611"/>
+          <!-- Bull band (green) -->
+          <rect x="140" y="0" width="180" height="90" fill="#22c55e11"/>
+          <!-- Risk-off band (purple) -->
+          <rect x="320" y="0" width="50" height="90" fill="#a855f711"/>
+          <!-- Current bull (green) -->
+          <rect x="370" y="0" width="30" height="90" fill="#22c55e22"/>
+          <!-- Price line -->
+          <path d="M0,70 Q40,65 80,60 Q100,58 140,55 Q180,40 220,35 Q260,30 320,38 Q350,45 370,40 Q385,36 400,30" stroke="#6c63ff" stroke-width="2" fill="none"/>
+          <!-- Regime labels -->
+          <text x="5" y="12" fill="#ef4444" font-size="7">BEAR</text>
+          <text x="83" y="12" fill="#f97316" font-size="7">HI-VOL</text>
+          <text x="145" y="12" fill="#22c55e" font-size="7">BULL</text>
+          <text x="323" y="12" fill="#a855f7" font-size="7">RISK-OFF</text>
+          <text x="372" y="12" fill="#22c55e" font-size="7">BULL</text>
+        </svg>
+      </div>
+      <!-- Regime history table -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;padding:6px 10px;border-bottom:1px solid #1e1e3a;color:#555;font-size:9px;text-transform:uppercase">
+          <span>Regime</span><span>Start</span><span>Duration</span><span>Return</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;padding:6px 10px;border-bottom:1px solid #111"><span style="color:#22c55e">● Bull</span><span style="color:#888">Mar 15</span><span style="color:#888">47d</span><span style="color:#22c55e">+8.4%</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;padding:6px 10px;border-bottom:1px solid #111"><span style="color:#a855f7">● Risk-Off</span><span style="color:#888">Feb 28</span><span style="color:#888">15d</span><span style="color:#ef4444">-3.2%</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;padding:6px 10px"><span style="color:#22c55e">● Bull</span><span style="color:#888">Jan 2</span><span style="color:#888">57d</span><span style="color:#22c55e">+12.1%</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sensitivity Analysis -->
+<div class="section">
+  <h3>🎚 Sensitivity Analysis</h3>
+  <p class="subtitle">Sweep two parameters simultaneously and see how they affect a target metric. Output is a color heatmap grid.</p>
+  <div class="mockup">
+    <div class="mockup-header">Sensitivity — Parameter Heatmap</div>
+    <div class="mockup-body" style="font-size:11px;display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Asset <span style="color:#c0b8ff">SPY</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">X-axis <span style="color:#c0b8ff">Volatility</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Y-axis <span style="color:#c0b8ff">Annual Drift</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Target <span style="color:#c0b8ff">Expected Return</span></div>
+        <div style="background:#6c63ff;border-radius:5px;padding:6px 12px;color:#fff">▶ Run</div>
+      </div>
+      <!-- Heatmap grid -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;padding:12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <div style="color:#555;font-size:9px;writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap">Annual Drift →</div>
+          <div style="flex:1">
+            <div style="color:#555;font-size:9px;text-align:center;margin-bottom:4px">Volatility →</div>
+            <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:2px">
+              <!-- Row 1 - high drift -->
+              <div style="aspect-ratio:1;background:#22c55e;border-radius:2px;opacity:0.9"></div>
+              <div style="aspect-ratio:1;background:#22c55e;border-radius:2px;opacity:0.75"></div>
+              <div style="aspect-ratio:1;background:#4ecdc4;border-radius:2px;opacity:0.8"></div>
+              <div style="aspect-ratio:1;background:#4ecdc4;border-radius:2px;opacity:0.6"></div>
+              <div style="aspect-ratio:1;background:#f97316;border-radius:2px;opacity:0.5"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.5"></div>
+              <!-- Row 2 -->
+              <div style="aspect-ratio:1;background:#22c55e;border-radius:2px;opacity:0.7"></div>
+              <div style="aspect-ratio:1;background:#4ecdc4;border-radius:2px;opacity:0.8"></div>
+              <div style="aspect-ratio:1;background:#4ecdc4;border-radius:2px;opacity:0.6"></div>
+              <div style="aspect-ratio:1;background:#f97316;border-radius:2px;opacity:0.6"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.5"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.7"></div>
+              <!-- Row 3 -->
+              <div style="aspect-ratio:1;background:#4ecdc4;border-radius:2px;opacity:0.6"></div>
+              <div style="aspect-ratio:1;background:#4ecdc4;border-radius:2px;opacity:0.5"></div>
+              <div style="aspect-ratio:1;background:#f97316;border-radius:2px;opacity:0.6"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.5"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.7"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.9"></div>
+              <!-- Row 4 - low drift -->
+              <div style="aspect-ratio:1;background:#f97316;border-radius:2px;opacity:0.5"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.5"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.7"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.8"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px;opacity:0.9"></div>
+              <div style="aspect-ratio:1;background:#ef4444;border-radius:2px"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;color:#555;font-size:8px">
+              <span>Low vol</span><span>High vol</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <div style="width:12px;height:12px;background:#22c55e;border-radius:2px"></div>
+            <div style="width:12px;height:12px;background:#4ecdc4;border-radius:2px"></div>
+            <div style="width:12px;height:12px;background:#f97316;border-radius:2px"></div>
+            <div style="width:12px;height:12px;background:#ef4444;border-radius:2px"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px;color:#555;font-size:8px;justify-content:space-between">
+            <span>+30%</span><span>+15%</span><span>0%</span><span>-15%</span>
+          </div>
+        </div>
+        <div style="color:#555;font-size:9px;margin-top:4px">Hover a cell to see exact value · Current params highlighted with border</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Multi-Asset Backtester -->
+<div class="section">
+  <h3>⏮ Multi-Asset Regime Backtester</h3>
+  <p class="subtitle">Define portfolio allocations per regime, backtest against FMP historical data, compare equity curve vs SPY benchmark.</p>
+  <div class="mockup">
+    <div class="mockup-header">Backtester — Allocation Rules + Results</div>
+    <div class="mockup-body" style="font-size:11px;display:flex;flex-direction:column;gap:10px">
+      <!-- Regime allocation rules -->
+      <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:6px;overflow:hidden">
+        <div style="padding:8px 12px;border-bottom:1px solid #1e1e3a;color:#888">Allocation Rules by Regime</div>
+        <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr 1fr auto;gap:0;font-size:10px">
+          <div style="padding:6px 10px;color:#555;border-bottom:1px solid #111">Regime</div>
+          <div style="padding:6px 10px;color:#555;border-bottom:1px solid #111">Asset 1</div>
+          <div style="padding:6px 10px;color:#555;border-bottom:1px solid #111">Asset 2</div>
+          <div style="padding:6px 10px;color:#555;border-bottom:1px solid #111">Asset 3</div>
+          <div style="padding:6px 10px;color:#555;border-bottom:1px solid #111">Asset 4</div>
+          <div style="padding:6px 10px;color:#555;border-bottom:1px solid #111"></div>
+
+          <div style="padding:6px 10px;color:#22c55e;border-bottom:1px solid #111">● Bull</div>
+          <div style="padding:6px 10px;color:#c0b8ff;border-bottom:1px solid #111">SPY 60%</div>
+          <div style="padding:6px 10px;color:#c0b8ff;border-bottom:1px solid #111">QQQ 20%</div>
+          <div style="padding:6px 10px;color:#c0b8ff;border-bottom:1px solid #111">BTC 20%</div>
+          <div style="padding:6px 10px;color:#444;border-bottom:1px solid #111">—</div>
+          <div style="padding:6px 10px;border-bottom:1px solid #111;color:#6c63ff;cursor:pointer">Edit</div>
+
+          <div style="padding:6px 10px;color:#ef4444;border-bottom:1px solid #111">● Bear</div>
+          <div style="padding:6px 10px;color:#c0b8ff;border-bottom:1px solid #111">GLD 40%</div>
+          <div style="padding:6px 10px;color:#c0b8ff;border-bottom:1px solid #111">TLT 40%</div>
+          <div style="padding:6px 10px;color:#c0b8ff;border-bottom:1px solid #111">Cash 20%</div>
+          <div style="padding:6px 10px;color:#444;border-bottom:1px solid #111">—</div>
+          <div style="padding:6px 10px;border-bottom:1px solid #111;color:#6c63ff;cursor:pointer">Edit</div>
+
+          <div style="padding:6px 10px;color:#a855f7">● Risk-Off</div>
+          <div style="padding:6px 10px;color:#c0b8ff">TLT 50%</div>
+          <div style="padding:6px 10px;color:#c0b8ff">GLD 30%</div>
+          <div style="padding:6px 10px;color:#c0b8ff">Cash 20%</div>
+          <div style="padding:6px 10px;color:#444">—</div>
+          <div style="padding:6px 10px;color:#6c63ff;cursor:pointer">Edit</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Period <span style="color:#c0b8ff">2020–2025</span></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:6px 10px;color:#888">Benchmark <span style="color:#c0b8ff">SPY</span></div>
+        <div style="background:#6c63ff;border-radius:5px;padding:6px 12px;color:#fff;margin-left:auto">▶ Run Backtest</div>
+      </div>
+      <!-- Results summary -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px">
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px"><div style="color:#555;font-size:9px">TOTAL RETURN</div><div style="color:#22c55e;font-size:14px;font-weight:bold">+187%</div><div style="color:#444;font-size:9px">SPY: +142%</div></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px"><div style="color:#555;font-size:9px">SHARPE RATIO</div><div style="color:#4ecdc4;font-size:14px;font-weight:bold">1.42</div><div style="color:#444;font-size:9px">SPY: 1.08</div></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px"><div style="color:#555;font-size:9px">MAX DRAWDOWN</div><div style="color:#ef4444;font-size:14px;font-weight:bold">-18.3%</div><div style="color:#444;font-size:9px">SPY: -33.9%</div></div>
+        <div style="background:#0d0d1a;border:1px solid #1e1e3a;border-radius:5px;padding:8px"><div style="color:#555;font-size:9px">CALMAR RATIO</div><div style="color:#f97316;font-size:14px;font-weight:bold">2.18</div><div style="color:#444;font-size:9px">SPY: 1.24</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:8px">Does the design for these four Analysis dashboards look right? Any changes before we move to Portfolio Risk, Sentiment, and Correlation?</p>
